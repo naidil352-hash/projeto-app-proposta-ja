@@ -1,0 +1,125 @@
+{
+  "project_name": "PROPOSTA JÁ",
+  "domain": "Mobile App / Sales CRM / Productivity",
+  "theme": "light",
+  "archetype": "Archetype 4 (Swiss & High-Contrast) + Mobile Utility",
+  "typography": {
+    "fonts": {
+      "headings": "Cabinet Grotesk (or sans-serif-condensed on mobile)",
+      "body": "Manrope (or system standard sans-serif)",
+      "mono": "monospace"
+    },
+    "hierarchy_rules": {
+      "h1": { "fontSize": 32, "fontWeight": "bold", "color": "#0F172A", "letterSpacing": -0.5 },
+      "h2": { "fontSize": 24, "fontWeight": "600", "color": "#0F172A", "letterSpacing": -0.5 },
+      "h3": { "fontSize": 20, "fontWeight": "500", "color": "#0F172A", "letterSpacing": -0.5 },
+      "body": { "fontSize": 16, "color": "#475569", "lineHeight": 24 },
+      "small": { "fontSize": 14, "color": "#64748B" },
+      "overline": { "fontSize": 12, "fontWeight": "bold", "color": "#94A3B8", "textTransform": "uppercase", "letterSpacing": 1.5 }
+    }
+  },
+  "colors": {
+    "background": "#F8FAFC",
+    "surface": {
+      "default": "#FFFFFF",
+      "glass": "rgba(255, 255, 255, 0.9)"
+    },
+    "text": {
+      "primary": "#0F172A",
+      "secondary": "#64748B",
+      "inverse": "#FFFFFF"
+    },
+    "brand": {
+      "primary": "#0F172A",
+      "primary_text": "#FFFFFF",
+      "primary_hover": "#1E293B"
+    },
+    "actions": {
+      "whatsapp": "#25D366",
+      "whatsapp_secondary": "rgba(37, 211, 102, 0.1)",
+      "danger": "#EF4444"
+    },
+    "status": {
+      "aberto": { "bg": "#EFF6FF", "text": "#1D4ED8", "border": "#BFDBFE" },
+      "realizado": { "bg": "#ECFDF5", "text": "#047857", "border": "#A7F3D0" },
+      "perdido": { "bg": "#FEF2F2", "text": "#B91C1C", "border": "#FECACA" }
+    }
+  },
+  "layout": {
+    "container": { "flex": 1, "backgroundColor": "#F8FAFC" },
+    "spacing": { "padding": 24 },
+    "bento_grid": {
+      "metric_card_primary": { "padding": 24, "borderRadius": 16, "backgroundColor": "#0F172A", "marginBottom": 16 },
+      "metric_card_secondary": { "padding": 20, "borderRadius": 16, "backgroundColor": "#FFFFFF", "borderWidth": 1, "borderColor": "#E2E8F0", "flex": 1 }
+    }
+  },
+  "components": {
+    "cards": {
+      "backgroundColor": "#FFFFFF",
+      "borderRadius": 16,
+      "borderWidth": 1,
+      "borderColor": "#E2E8F0",
+      "overflow": "hidden"
+    },
+    "inputs": {
+      "height": 56,
+      "borderRadius": 12,
+      "backgroundColor": "#F8FAFC",
+      "borderWidth": 1,
+      "borderColor": "#E2E8F0",
+      "paddingHorizontal": 16,
+      "fontSize": 16,
+      "color": "#0F172A"
+    },
+    "buttons": {
+      "primary": {
+        "height": 56,
+        "borderRadius": 12,
+        "backgroundColor": "#0F172A",
+        "flexDirection": "row",
+        "alignItems": "center",
+        "justifyContent": "center"
+      },
+      "whatsapp": {
+        "height": 56,
+        "borderRadius": 12,
+        "backgroundColor": "#25D366",
+        "flexDirection": "row",
+        "alignItems": "center",
+        "justifyContent": "center"
+      }
+    },
+    "list_items": {
+      "padding": 20,
+      "backgroundColor": "#FFFFFF",
+      "borderRadius": 12,
+      "borderWidth": 1,
+      "borderColor": "#E2E8F0",
+      "marginBottom": 12
+    }
+  },
+  "icons_library": "@expo/vector-icons (Feather or Ionicons)",
+  "image_urls": [
+    {
+      "category": "user_avatar",
+      "url": "https://images.unsplash.com/photo-1729795795561-97daeedfec02?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NTYxODd8MHwxfHNlYXJjaHwxfHxicmF6aWxpYW4lMjBidXNpbmVzcyUyMHBlcnNvbiUyMHBvcnRyYWl0JTIwaGVhZHNob3R8ZW58MHx8fHwxNzc2OTQxMTk2fDA&ixlib=rb-4.1.0&q=85",
+      "description": "Default avatar for the Brazilian salesperson profile"
+    },
+    {
+      "category": "company_logo_placeholder",
+      "url": "https://images.unsplash.com/photo-1638864616270-64041b699a50?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NTYxOTJ8MHwxfHNlYXJjaHwxfHxtb2Rlcm4lMjBtaW5pbWFsaXN0JTIwYWJzdHJhY3QlMjBnZW9tZXRyaWMlMjBjb21wYW55JTIwbG9nbyUyMG1hcmt8ZW58MHx8fHwxNzc2OTQxMjA4fDA&ixlib=rb-4.1.0&q=85",
+      "description": "Abstract geometric logo for the company profile default state"
+    }
+  ],
+  "instructions_to_main_agent": [
+    "Build a native React Native Expo application. Ignore web HTML tags (div, span) and strictly use React Native components (View, Text, TextInput, ScrollView, TouchableOpacity).",
+    "Use standard StyleSheet.create for styling, translating the provided design tokens (colors, typography, spacing) into React Native style objects.",
+    "Form design: Implement large hit areas for touch targets (height 56) making it thumb-friendly for salespeople on the go.",
+    "Proposal structure: Allow dynamic addition of multiple products. Include Nome, CNPJ/CPF, Telefone, and Prazo de Embarque.",
+    "Status mechanics: Add a React Native Modal or Bottom Sheet for marking a proposal as 'Perdido', requiring a text reason to proceed.",
+    "Follow-ups & WhatsApp: Integrate Expo Linking (Linking.openURL) to open WhatsApp intent (wa.me) with pre-filled AI follow-up message: 'Passando pra confirmar contigo se podemos dar sequencia no seu pedido.'",
+    "List View: Render proposal history clearly. Highlight proposals that have been 'Aberto' for more than 3 days with a warning flag.",
+    "PDF Preview: Provide a mocked PDF generation flow or use expo-print to generate a simple PDF if requested, wrapping it with a full-width bottom sticky CTA for 'Share via WhatsApp'.",
+    "Create .js files (not .tsx) as strictly requested in the constraints."
+  ]
+}
