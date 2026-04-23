@@ -546,7 +546,13 @@ async def subscription_status(session_id: str, request: Request, user=Depends(ge
     host_url = str(request.base_url).rstrip("/")
     webhook_url = f"{host_url}/api/webhook/stripe"
     stripe = StripeCheckout(api_key=STRIPE_API_KEY, webhook_url=webhook_url)
-    st: CheckoutStatusResponse = await stripe.get_checkout_status(session_id)
+    try:
+        st: CheckoutStatusResponse = await stripe.get_checkout_status(session_id)
+    except Exception as e:
+        # Session not yet finalized at Stripe / unavailable — keep UI polling
+        logging.info(f"checkout status pending for {session_id}: {e}")
+        state = await get_user_plan_state(user["id"])
+        return {"payment_status": "pending", "status": "open", **state}
 
     # Update our record
     await db.payment_transactions.update_one(
@@ -606,7 +612,7 @@ async def stripe_webhook(request: Request):
     try:
         evt = await stripe.handle_webhook(body, sig)
     except Exception as e:
-        logging.exception("stripe webhook error")
+        logging.info(f"stripe webhook rejected: {e}")
         raise HTTPException(status_code=400, detail="webhook error")
 
     if evt.payment_status == "paid" and evt.session_id:
