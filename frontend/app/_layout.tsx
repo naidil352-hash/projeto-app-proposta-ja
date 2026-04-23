@@ -41,6 +41,18 @@ export default function RootLayout() {
             <Stack.Screen name="(auth)" />
             <Stack.Screen name="(tabs)" />
             <Stack.Screen name="proposal/[id]" options={{ headerShown: false, presentation: "card" }} />
+            <Stack.Screen name="subscription" options={{ headerShown: false, presentation: "modal" }} />
+          </Stack>
+        </Gate>
+      </AuthProvider>
+    </SafeAreaProvider>
+  );
+}
+
+const styles = StyleSheet.create({
+  loading: { flex: 1, backgroundColor: theme.colors.bg, alignItems: "center", justifyContent: "center" },
+});
+card" }} />
           </Stack>
         </Gate>
       </AuthProvider>

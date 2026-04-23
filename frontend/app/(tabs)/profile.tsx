@@ -15,13 +15,14 @@ import {
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import * as ImagePicker from "expo-image-picker";
-import { useFocusEffect } from "expo-router";
+import { useFocusEffect, useRouter } from "expo-router";
 import { api, formatApiError } from "../../src/api";
 import { theme } from "../../src/theme";
 import { useAuth } from "../../src/auth";
 
 export default function Profile() {
   const { user, logout } = useAuth();
+  const router = useRouter();
   const [companyName, setCompanyName] = useState("");
   const [cnpj, setCnpj] = useState("");
   const [phone, setPhone] = useState("");
@@ -147,6 +148,21 @@ export default function Profile() {
 
           <View style={s.divider} />
 
+          <TouchableOpacity
+            style={s.planCta}
+            onPress={() => router.push("/subscription")}
+            testID="open-subscription"
+          >
+            <View style={s.planIcon}>
+              <Ionicons name="star" size={18} color="#fff" />
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text style={s.planTitle}>Plano Pro</Text>
+              <Text style={s.planDesc}>Propostas ilimitadas + recursos avançados</Text>
+            </View>
+            <Ionicons name="chevron-forward" size={20} color={theme.colors.textMuted} />
+          </TouchableOpacity>
+
           <View style={s.userCard}>
             <Text style={s.userLabel}>Conta</Text>
             <Text style={s.userName}>{user?.name}</Text>
@@ -253,4 +269,25 @@ const s = StyleSheet.create({
     paddingVertical: 14,
   },
   logoutText: { color: theme.colors.danger, fontWeight: "700" },
+  planCta: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+    padding: 14,
+    backgroundColor: "#fff",
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    borderRadius: 14,
+    marginBottom: 12,
+  },
+  planIcon: {
+    width: 36,
+    height: 36,
+    borderRadius: 10,
+    backgroundColor: theme.colors.primary,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  planTitle: { fontWeight: "700", color: theme.colors.text, fontSize: 15 },
+  planDesc: { color: theme.colors.textSec, fontSize: 12, marginTop: 2 },
 });

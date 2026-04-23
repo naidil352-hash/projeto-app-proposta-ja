@@ -1,0 +1,58 @@
+{
+  "summary": "Iteration 2 backend testing for PROPOSTA JÁ: subscription plans, checkout, quota enforcement, proposal duplicate, new proposal fields (discount / payment_terms / validity_days), /auth/me plan merge, /stats plan merge, webhook presence. Also re-ran iteration-1 regression (auth + proposals CRUD + company + stats + clients). 35/36 tests passed (97.2%). Only failure: GET /api/subscription/status/{session_id} returns HTTP 500 because stripe.checkout.Session.retrieve() raises 'No such checkout.session' for a session JUST created via the same emergentintegrations client — the endpoint does not catch CheckoutError.",
+  "backend_issues": {
+    "critical": [
+      {
+        "endpoint": "GET /api/subscription/status/{session_id}",
+        "issue": "Returns 500 Internal Server Error when called with a valid, freshly-created Emergent-proxy session id. stripe.checkout.Session.retrieve() raises InvalidRequestError ('No such checkout.session: cs_test_...') which propagates as CheckoutError and is NOT caught by the route → 500. Frontend will break on the post-checkout polling screen.",
+        "priority": "HIGH"
+      }
+    ],
+    "minor": [
+      {
+        "endpoint": "POST /api/webhook/stripe",
+        "issue": "Valid but unsigned / invalid-body webhook triggers a KeyError('id') inside emergentintegrations.handle_webhook that is logged as an unhandled traceback before being re-raised as HTTPException(400). Response contract (400) is correct, but noisy logs. Consider stricter body validation before calling handle_webhook."
+      },
+      {
+        "endpoint": "POST /api/proposals/{pid}/duplicate",
+        "issue": "Clones last_reminded_at=None (good) and resets status/created_at (good), but also copies original total / products / discount exactly — confirmed works. Worth documenting that the duplicate re-enters the quota counter (quota test verified 402 on duplicate after 10)."
+      }
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_subscription_and_quota.py",
+    "/app/backend/tests/test_proposta_ja_api.py",
+    "/app/test_reports/pytest/pytest_results.xml"
+  ],
+  "action_items": [
+    "Fix GET /api/subscription/status/{session_id}: wrap the stripe.get_checkout_status() call in try/except CheckoutError and return a graceful payload like {payment_status: 'pending', status: 'open', ...plan_state} so the UI can continue polling instead of seeing 500. Root cause is likely a mismatch in stripe.api_base between create and retrieve when running under the sk_test_emergent proxy.",
+    "Optionally verify the stripe.api_base persists as the proxy URL for retrieve — if the proxy does not expose GET /checkout/sessions/{id}, the whole status polling flow will never return 'paid' via this endpoint and the app must rely on the webhook path to activate subscriptions.",
+    "Frontend NOT tested (testing_type=backend only). Main agent should run a UI pass covering: /subscription/plans screen, checkout URL redirect, quota-exceeded toast (402), duplicate button, and new proposal fields in the create/edit form."
+  ],
+  "critical_code_review_comments": [
+    "server.py now 676 lines — still OK but growing; consider splitting subscription/payment routes into routers/payments.py before the next iteration.",
+    "SUBSCRIPTION_PLANS is hard-coded server-side which is the correct pattern (never trust client-supplied amounts). Good.",
+    "get_user_plan_state queries proposals count by string-ISO comparison on created_at — works because ISO timestamps are lexicographically sortable with fixed offset, but a BSON date field would be safer long-term.",
+    "/api/subscription/status/{session_id} does NOT catch CheckoutError — this is the direct cause of the 500. Every integration call to an external service must be defensively wrapped.",
+    "Webhook handler correctly re-raises 400 on signature failure but logs full traceback from KeyError('id') inside the library — consider a pre-check: if not body or not sig: raise HTTPException(400).",
+    "Duplicate endpoint correctly enforces free quota BEFORE cloning — good UX.",
+    "CORS still uses allow_origins=['*'] with allow_credentials=False — fine for Bearer token auth, no change needed."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_subscription_and_quota.py (new)",
+    "/app/test_reports/iteration_2.json (new)",
+    "/app/test_reports/pytest/pytest_results.xml (regenerated)"
+  ],
+  "success_rate": {"backend": "97.2% (35/36)", "frontend": "not tested"},
+  "seed_data_creation": "Two fresh users created per run: subs_<uuid>@propostaja.com (for subscription + CRUD + new fields + duplicate) and quota_<uuid>@propostaja.com (for quota test — creates 10 proposals then verifies 11th returns 402). No cleanup performed on subs_ user's proposals because the duplicate + discount tests need state; main agent can rely on fresh users each run.",
+  "retest_needed": true,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "35/36 backend tests pass. Single failure is GET /api/subscription/status/{session_id} → 500 due to unhandled emergentintegrations CheckoutError when Stripe proxy cannot find the just-created session. Reuse /app/backend/tests/test_subscription_and_quota.py + /app/backend/tests/test_proposta_ja_api.py for regression — both are pytest, idempotent, register fresh users each run. Quota test will exhaust the monthly counter for its test user so do not rely on that user for other tests. Webhook 400 test passes because the route catches the library exception.",
+  "rca_of_issue": "Reproduction: (1) POST /api/auth/register fresh user, (2) POST /api/subscription/checkout {plan: 'pro_monthly'} → 200 with session_id cs_test_a1pxdz... , (3) GET /api/subscription/status/{that_session_id} → 500. Backend trace in /var/log/supervisor/backend.err.log shows stripe._error.InvalidRequestError: 'No such checkout.session: cs_test_a1pxdz...' raised inside emergentintegrations.payments.stripe.checkout.get_checkout_status, bubbling up as CheckoutError then as 500. Mitigation for main agent: wrap the call in try/except CheckoutError in server.py:549 and return {payment_status: 'pending', status: 'open', **get_user_plan_state(user.id)} so the frontend polling loop keeps working until the webhook activates the subscription. Also verify stripe.api_base is set to the emergent proxy both on session creation AND on retrieve (it is set in StripeCheckout.__init__ which is called fresh in each route, so in theory OK — but the proxy may not support GET /checkout/sessions/{id}, in which case the recommended flow is to rely solely on the webhook for activation and treat status as 'pending' client-side)."
+}

@@ -1,4 +1,5 @@
 import axios from "axios";
+import { Platform } from "react-native";
 import * as SecureStore from "expo-secure-store";
 
 const BASE = process.env.EXPO_PUBLIC_BACKEND_URL as string;
@@ -6,16 +7,29 @@ const BASE = process.env.EXPO_PUBLIC_BACKEND_URL as string;
 export const api = axios.create({ baseURL: `${BASE}/api` });
 
 const TOKEN_KEY = "propostaja_token";
+const isWeb = Platform.OS === "web";
 
 export async function saveToken(token: string) {
+  if (isWeb) {
+    if (typeof window !== "undefined") window.localStorage.setItem(TOKEN_KEY, token);
+    return;
+  }
   await SecureStore.setItemAsync(TOKEN_KEY, token);
 }
 
 export async function loadToken(): Promise<string | null> {
+  if (isWeb) {
+    if (typeof window === "undefined") return null;
+    return window.localStorage.getItem(TOKEN_KEY);
+  }
   return await SecureStore.getItemAsync(TOKEN_KEY);
 }
 
 export async function clearToken() {
+  if (isWeb) {
+    if (typeof window !== "undefined") window.localStorage.removeItem(TOKEN_KEY);
+    return;
+  }
   await SecureStore.deleteItemAsync(TOKEN_KEY);
 }
 

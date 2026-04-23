@@ -13,9 +13,16 @@ import {
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
-import { useRouter, useFocusEffect } from "expo-router";
+import { useRouter } from "expo-router";
 import { api, formatApiError } from "../../src/api";
 import { theme, formatCurrency } from "../../src/theme";
+import {
+  maskDocument,
+  maskPhoneBR,
+  maskCurrency,
+  parseCurrency,
+  parseNumber,
+} from "../../src/masks";
 
 type Product = { name: string; quantity: string; price: string };
 
@@ -26,14 +33,11 @@ export default function NewProposal() {
   const [phone, setPhone] = useState("");
   const [deadline, setDeadline] = useState("");
   const [notes, setNotes] = useState("");
+  const [discount, setDiscount] = useState("");
+  const [paymentTerms, setPaymentTerms] = useState("");
+  const [validity, setValidity] = useState("15");
   const [products, setProducts] = useState<Product[]>([{ name: "", quantity: "", price: "" }]);
   const [saving, setSaving] = useState(false);
-
-  useFocusEffect(
-    React.useCallback(() => {
-      return () => {};
-    }, [])
-  );
 
   const addProduct = () => setProducts([...products, { name: "", quantity: "", price: "" }]);
   const removeProduct = (i: number) => {
@@ -44,10 +48,12 @@ export default function NewProposal() {
     setProducts(products.map((p, idx) => (idx === i ? { ...p, [key]: value } : p)));
   };
 
-  const total = products.reduce(
-    (acc, p) => acc + (parseFloat(p.quantity || "0") || 0) * (parseFloat(p.price || "0") || 0),
+  const subtotal = products.reduce(
+    (acc, p) => acc + (parseNumber(p.quantity) || 0) * (parseCurrency(p.price) || 0),
     0
   );
+  const discountNum = parseCurrency(discount);
+  const total = Math.max(subtotal - discountNum, 0);
 
   const reset = () => {
     setClientName("");
@@ -55,6 +61,9 @@ export default function NewProposal() {
     setPhone("");
     setDeadline("");
     setNotes("");
+    setDiscount("");
+    setPaymentTerms("");
+    setValidity("15");
     setProducts([{ name: "", quantity: "", price: "" }]);
   };
 
@@ -67,8 +76,8 @@ export default function NewProposal() {
       .filter((p) => p.name.trim())
       .map((p) => ({
         name: p.name.trim(),
-        quantity: parseFloat(p.quantity || "0") || 0,
-        price: parseFloat(p.price || "0") || 0,
+        quantity: parseNumber(p.quantity),
+        price: parseCurrency(p.price),
       }));
     if (!cleanProducts.length) {
       Alert.alert("Atenção", "Adicione pelo menos 1 produto.");
@@ -83,11 +92,25 @@ export default function NewProposal() {
         products: cleanProducts,
         shipping_deadline: deadline.trim(),
         notes: notes.trim(),
+        discount: discountNum,
+        payment_terms: paymentTerms.trim(),
+        validity_days: parseInt(validity || "15", 10) || 15,
       });
       reset();
       router.push(`/proposal/${data.id}`);
-    } catch (e) {
-      Alert.alert("Erro", formatApiError(e));
+    } catch (e: any) {
+      if (e?.response?.status === 402) {
+        Alert.alert(
+          "Limite atingido",
+          e.response.data?.detail || "Faça upgrade para o plano Pro",
+          [
+            { text: "Depois", style: "cancel" },
+            { text: "Ver planos", onPress: () => router.push("/subscription") },
+          ]
+        );
+      } else {
+        Alert.alert("Erro", formatApiError(e));
+      }
     } finally {
       setSaving(false);
     }
@@ -106,8 +129,22 @@ export default function NewProposal() {
         <ScrollView contentContainerStyle={s.scroll} keyboardShouldPersistTaps="handled">
           <Section title="Cliente">
             <Input testID="inp-client-name" label="Nome *" value={clientName} onChangeText={setClientName} placeholder="Nome do cliente" />
-            <Input testID="inp-client-doc" label="CNPJ / CPF *" value={doc} onChangeText={setDoc} keyboardType="number-pad" placeholder="00.000.000/0000-00" />
-            <Input testID="inp-client-phone" label="Telefone *" value={phone} onChangeText={setPhone} keyboardType="phone-pad" placeholder="(11) 99999-9999" />
+            <Input
+              testID="inp-client-doc"
+              label="CNPJ / CPF *"
+              value={doc}
+              onChangeText={(v: string) => setDoc(maskDocument(v))}
+              keyboardType="number-pad"
+              placeholder="000.000.000-00"
+            />
+            <Input
+              testID="inp-client-phone"
+              label="Telefone *"
+              value={phone}
+              onChangeText={(v: string) => setPhone(maskPhoneBR(v))}
+              keyboardType="phone-pad"
+              placeholder="(11) 99999-9999"
+            />
           </Section>
 
           <Section
@@ -132,7 +169,7 @@ export default function NewProposal() {
                   testID={`inp-product-name-${i}`}
                   label="Produto"
                   value={p.name}
-                  onChangeText={(v) => updateProduct(i, "name", v)}
+                  onChangeText={(v: string) => updateProduct(i, "name", v)}
                   placeholder="Nome do produto"
                 />
                 <View style={{ flexDirection: "row", gap: 8 }}>
@@ -141,7 +178,7 @@ export default function NewProposal() {
                       testID={`inp-product-qty-${i}`}
                       label="Qtd"
                       value={p.quantity}
-                      onChangeText={(v) => updateProduct(i, "quantity", v)}
+                      onChangeText={(v: string) => updateProduct(i, "quantity", v.replace(/[^0-9,.]/g, ""))}
                       keyboardType="numeric"
                       placeholder="0"
                     />
@@ -151,8 +188,8 @@ export default function NewProposal() {
                       testID={`inp-product-price-${i}`}
                       label="Preço un."
                       value={p.price}
-                      onChangeText={(v) => updateProduct(i, "price", v)}
-                      keyboardType="decimal-pad"
+                      onChangeText={(v: string) => updateProduct(i, "price", maskCurrency(v))}
+                      keyboardType="numeric"
                       placeholder="0,00"
                     />
                   </View>
@@ -161,7 +198,7 @@ export default function NewProposal() {
             ))}
           </Section>
 
-          <Section title="Entrega">
+          <Section title="Condições">
             <Input
               testID="inp-deadline"
               label="Prazo de embarque *"
@@ -169,6 +206,35 @@ export default function NewProposal() {
               onChangeText={setDeadline}
               placeholder="Ex: 15 dias úteis"
             />
+            <Input
+              testID="inp-payment-terms"
+              label="Condições de pagamento"
+              value={paymentTerms}
+              onChangeText={setPaymentTerms}
+              placeholder="Ex: 30/60/90 dias, Pix à vista"
+            />
+            <View style={{ flexDirection: "row", gap: 8 }}>
+              <View style={{ flex: 1 }}>
+                <Input
+                  testID="inp-discount"
+                  label="Desconto (R$)"
+                  value={discount}
+                  onChangeText={(v: string) => setDiscount(maskCurrency(v))}
+                  keyboardType="numeric"
+                  placeholder="0,00"
+                />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Input
+                  testID="inp-validity"
+                  label="Validade (dias)"
+                  value={validity}
+                  onChangeText={(v: string) => setValidity(v.replace(/\D/g, "").slice(0, 3))}
+                  keyboardType="number-pad"
+                  placeholder="15"
+                />
+              </View>
+            </View>
             <Input
               testID="inp-notes"
               label="Observações"
@@ -180,8 +246,17 @@ export default function NewProposal() {
           </Section>
 
           <View style={s.totalBox} testID="total-preview">
-            <Text style={s.totalLabel}>Total</Text>
-            <Text style={s.totalValue}>{formatCurrency(total)}</Text>
+            <View style={{ flex: 1 }}>
+              <Text style={s.totalLabel}>Subtotal</Text>
+              <Text style={s.subValue}>{formatCurrency(subtotal)}</Text>
+              {discountNum > 0 && (
+                <Text style={s.subValue}>- {formatCurrency(discountNum)} desconto</Text>
+              )}
+            </View>
+            <View style={{ alignItems: "flex-end" }}>
+              <Text style={s.totalLabel}>Total</Text>
+              <Text style={s.totalValue}>{formatCurrency(total)}</Text>
+            </View>
           </View>
         </ScrollView>
 
@@ -282,15 +357,12 @@ const s = StyleSheet.create({
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "center",
+    gap: 12,
   },
-  totalLabel: { color: "#94A3B8", fontSize: 12, letterSpacing: 1.5, textTransform: "uppercase", fontWeight: "700" },
-  totalValue: { color: "#fff", fontSize: 24, fontWeight: "800", letterSpacing: -0.5 },
-  bottom: {
-    position: "absolute",
-    left: 16,
-    right: 16,
-    bottom: 16,
-  },
+  totalLabel: { color: "#94A3B8", fontSize: 11, letterSpacing: 1.5, textTransform: "uppercase", fontWeight: "700" },
+  totalValue: { color: "#fff", fontSize: 26, fontWeight: "800", letterSpacing: -0.5, marginTop: 4 },
+  subValue: { color: "rgba(255,255,255,0.7)", fontSize: 14, marginTop: 4 },
+  bottom: { position: "absolute", left: 16, right: 16, bottom: 16 },
   cta: {
     height: 56,
     borderRadius: 12,

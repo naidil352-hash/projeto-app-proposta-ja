@@ -13,9 +13,17 @@ from datetime import datetime, timezone, timedelta
 from typing import List, Optional, Literal
 
 from fastapi import FastAPI, APIRouter, Depends, HTTPException, Request
+from fastapi.responses import HTMLResponse
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 from pydantic import BaseModel, Field, EmailStr
+
+from emergentintegrations.payments.stripe.checkout import (
+    StripeCheckout,
+    CheckoutSessionRequest,
+    CheckoutSessionResponse,
+    CheckoutStatusResponse,
+)
 
 
 # ---------- DB ----------
@@ -32,6 +40,14 @@ api_router = APIRouter(prefix="/api")
 # ---------- Auth helpers ----------
 JWT_ALGORITHM = "HS256"
 JWT_SECRET = os.environ["JWT_SECRET"]
+STRIPE_API_KEY = os.environ.get("STRIPE_API_KEY", "")
+
+# Fixed subscription packages (price defined server-side)
+SUBSCRIPTION_PLANS = {
+    "pro_monthly": {"amount": 29.90, "currency": "brl", "days": 30, "label": "Pro Mensal"},
+    "pro_yearly": {"amount": 299.00, "currency": "brl", "days": 365, "label": "Pro Anual"},
+}
+FREE_MONTHLY_QUOTA = 10
 
 
 def hash_password(password: str) -> str:
@@ -69,6 +85,33 @@ async def get_current_user(request: Request) -> dict:
     return user
 
 
+async def get_user_plan_state(user_id: str) -> dict:
+    """Returns {plan, pro_until, month_count, month_quota, is_pro}."""
+    sub = await db.subscriptions.find_one({"user_id": user_id}, {"_id": 0})
+    now = datetime.now(timezone.utc)
+    month_start = datetime(now.year, now.month, 1, tzinfo=timezone.utc)
+    month_count = await db.proposals.count_documents(
+        {"user_id": user_id, "created_at": {"$gte": month_start.isoformat()}}
+    )
+    is_pro = False
+    pro_until = None
+    if sub and sub.get("pro_until"):
+        try:
+            pu = datetime.fromisoformat(sub["pro_until"])
+            if pu > now:
+                is_pro = True
+                pro_until = sub["pro_until"]
+        except Exception:
+            pass
+    return {
+        "plan": "pro" if is_pro else "free",
+        "pro_until": pro_until,
+        "month_count": month_count,
+        "month_quota": None if is_pro else FREE_MONTHLY_QUOTA,
+        "is_pro": is_pro,
+    }
+
+
 # ---------- Models ----------
 class RegisterIn(BaseModel):
     name: str
@@ -92,7 +135,7 @@ class CompanyIn(BaseModel):
     phone: Optional[str] = ""
     email: Optional[str] = ""
     address: Optional[str] = ""
-    logo_base64: Optional[str] = ""  # data URI or raw base64
+    logo_base64: Optional[str] = ""
 
 
 class Product(BaseModel):
@@ -106,16 +149,23 @@ ProposalStatus = Literal["aberto", "perdido", "realizado"]
 
 class ProposalIn(BaseModel):
     client_name: str
-    client_document: str  # CNPJ ou CPF
+    client_document: str
     client_phone: str
     products: List[Product]
-    shipping_deadline: str  # prazo de embarque (texto livre / data)
+    shipping_deadline: str
     notes: Optional[str] = ""
+    discount: Optional[float] = 0.0  # absolute BRL discount
+    payment_terms: Optional[str] = ""  # condições de pagamento
+    validity_days: Optional[int] = 15  # validade da proposta em dias
 
 
 class StatusUpdate(BaseModel):
     status: ProposalStatus
     lost_reason: Optional[str] = None
+
+
+class CheckoutIn(BaseModel):
+    plan: str  # pro_monthly | pro_yearly
 
 
 # ---------- Startup ----------
@@ -124,6 +174,8 @@ async def on_startup():
     await db.users.create_index("email", unique=True)
     await db.proposals.create_index("user_id")
     await db.proposals.create_index("created_at")
+    await db.subscriptions.create_index("user_id", unique=True)
+    await db.payment_transactions.create_index("session_id", unique=True)
 
 
 @app.on_event("shutdown")
@@ -147,7 +199,6 @@ async def register(data: RegisterIn):
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
     await db.users.insert_one(doc)
-    # Initialize empty company profile
     await db.companies.update_one(
         {"user_id": user_id},
         {"$setOnInsert": {
@@ -180,7 +231,8 @@ async def login(data: LoginIn):
 
 @api_router.get("/auth/me")
 async def me(user=Depends(get_current_user)):
-    return user
+    plan_state = await get_user_plan_state(user["id"])
+    return {**user, **plan_state}
 
 
 # ---------- Company profile ----------
@@ -212,12 +264,21 @@ async def update_company(data: CompanyIn, user=Depends(get_current_user)):
 
 
 # ---------- Proposals ----------
-def _proposal_total(products: List[dict]) -> float:
-    return round(sum((p.get("quantity", 0) or 0) * (p.get("price", 0) or 0) for p in products), 2)
+def _proposal_total(products: List[dict], discount: float = 0.0) -> float:
+    subtotal = sum((p.get("quantity", 0) or 0) * (p.get("price", 0) or 0) for p in products)
+    return round(max(subtotal - (discount or 0), 0), 2)
 
 
 @api_router.post("/proposals")
 async def create_proposal(data: ProposalIn, user=Depends(get_current_user)):
+    # Enforce free tier quota
+    state = await get_user_plan_state(user["id"])
+    if not state["is_pro"] and state["month_count"] >= FREE_MONTHLY_QUOTA:
+        raise HTTPException(
+            status_code=402,
+            detail=f"Você atingiu o limite de {FREE_MONTHLY_QUOTA} propostas do plano grátis este mês. Faça upgrade para Pro para propostas ilimitadas.",
+        )
+
     pid = str(uuid.uuid4())
     now = datetime.now(timezone.utc).isoformat()
     products = [p.dict() for p in data.products]
@@ -230,9 +291,12 @@ async def create_proposal(data: ProposalIn, user=Depends(get_current_user)):
         "products": products,
         "shipping_deadline": data.shipping_deadline,
         "notes": data.notes or "",
+        "discount": float(data.discount or 0),
+        "payment_terms": data.payment_terms or "",
+        "validity_days": int(data.validity_days or 15),
         "status": "aberto",
         "lost_reason": "",
-        "total": _proposal_total(products),
+        "total": _proposal_total(products, data.discount or 0),
         "created_at": now,
         "updated_at": now,
         "last_reminded_at": None,
@@ -272,7 +336,10 @@ async def update_proposal(pid: str, data: ProposalIn, user=Depends(get_current_u
         "products": products,
         "shipping_deadline": data.shipping_deadline,
         "notes": data.notes or "",
-        "total": _proposal_total(products),
+        "discount": float(data.discount or 0),
+        "payment_terms": data.payment_terms or "",
+        "validity_days": int(data.validity_days or 15),
+        "total": _proposal_total(products, data.discount or 0),
         "updated_at": datetime.now(timezone.utc).isoformat(),
     }
     res = await db.proposals.update_one(
@@ -300,6 +367,34 @@ async def change_status(pid: str, data: StatusUpdate, user=Depends(get_current_u
         raise HTTPException(status_code=404, detail="Proposta não encontrada")
     doc = await db.proposals.find_one({"id": pid}, {"_id": 0})
     return doc
+
+
+@api_router.post("/proposals/{pid}/duplicate")
+async def duplicate_proposal(pid: str, user=Depends(get_current_user)):
+    state = await get_user_plan_state(user["id"])
+    if not state["is_pro"] and state["month_count"] >= FREE_MONTHLY_QUOTA:
+        raise HTTPException(
+            status_code=402,
+            detail=f"Você atingiu o limite de {FREE_MONTHLY_QUOTA} propostas este mês.",
+        )
+    orig = await db.proposals.find_one({"id": pid, "user_id": user["id"]}, {"_id": 0})
+    if not orig:
+        raise HTTPException(status_code=404, detail="Proposta não encontrada")
+    now = datetime.now(timezone.utc).isoformat()
+    new_id = str(uuid.uuid4())
+    clone = {
+        **orig,
+        "id": new_id,
+        "status": "aberto",
+        "lost_reason": "",
+        "created_at": now,
+        "updated_at": now,
+        "last_reminded_at": None,
+    }
+    clone.pop("_id", None)
+    await db.proposals.insert_one(clone)
+    clone.pop("_id", None)
+    return clone
 
 
 @api_router.delete("/proposals/{pid}")
@@ -337,6 +432,7 @@ async def get_stats(user=Depends(get_current_user)):
         if p["status"] == "realizado" and created >= month_start:
             month_won_value += p.get("total", 0)
 
+    plan_state = await get_user_plan_state(user["id"])
     return {
         "open_count": total_open,
         "won_count": total_won,
@@ -344,6 +440,7 @@ async def get_stats(user=Depends(get_current_user)):
         "open_value": round(open_value, 2),
         "month_won_value": round(month_won_value, 2),
         "stale_count": stale_count,
+        **plan_state,
     }
 
 
@@ -373,6 +470,189 @@ async def list_clients(user=Depends(get_current_user)):
     return results
 
 
+# ---------- Subscription / Payments ----------
+@api_router.get("/subscription/plans")
+async def subscription_plans():
+    return {
+        "plans": [
+            {"id": k, **v} for k, v in SUBSCRIPTION_PLANS.items()
+        ],
+        "free_monthly_quota": FREE_MONTHLY_QUOTA,
+    }
+
+
+@api_router.get("/subscription/me")
+async def subscription_me(user=Depends(get_current_user)):
+    return await get_user_plan_state(user["id"])
+
+
+@api_router.post("/subscription/checkout")
+async def create_subscription_checkout(data: CheckoutIn, request: Request, user=Depends(get_current_user)):
+    plan = SUBSCRIPTION_PLANS.get(data.plan)
+    if not plan:
+        raise HTTPException(status_code=400, detail="Plano inválido")
+    if not STRIPE_API_KEY:
+        raise HTTPException(status_code=500, detail="Pagamentos não configurados")
+
+    host_url = str(request.base_url).rstrip("/")
+    webhook_url = f"{host_url}/api/webhook/stripe"
+    stripe = StripeCheckout(api_key=STRIPE_API_KEY, webhook_url=webhook_url)
+
+    success_url = f"{host_url}/api/subscription/success?session_id={{CHECKOUT_SESSION_ID}}"
+    cancel_url = f"{host_url}/api/subscription/cancel"
+
+    req = CheckoutSessionRequest(
+        amount=float(plan["amount"]),
+        currency=plan["currency"],
+        success_url=success_url,
+        cancel_url=cancel_url,
+        metadata={
+            "user_id": user["id"],
+            "email": user["email"],
+            "plan": data.plan,
+        },
+    )
+    session: CheckoutSessionResponse = await stripe.create_checkout_session(req)
+
+    await db.payment_transactions.insert_one({
+        "session_id": session.session_id,
+        "user_id": user["id"],
+        "email": user["email"],
+        "plan": data.plan,
+        "amount": float(plan["amount"]),
+        "currency": plan["currency"],
+        "payment_status": "initiated",
+        "status": "open",
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    })
+
+    return {"url": session.url, "session_id": session.session_id}
+
+
+@api_router.get("/subscription/status/{session_id}")
+async def subscription_status(session_id: str, request: Request, user=Depends(get_current_user)):
+    if not STRIPE_API_KEY:
+        raise HTTPException(status_code=500, detail="Pagamentos não configurados")
+
+    tx = await db.payment_transactions.find_one({"session_id": session_id}, {"_id": 0})
+    if not tx or tx["user_id"] != user["id"]:
+        raise HTTPException(status_code=404, detail="Transação não encontrada")
+
+    # If already processed as paid, no need to hit Stripe again
+    if tx.get("payment_status") == "paid":
+        state = await get_user_plan_state(user["id"])
+        return {"payment_status": "paid", "status": "complete", **state}
+
+    host_url = str(request.base_url).rstrip("/")
+    webhook_url = f"{host_url}/api/webhook/stripe"
+    stripe = StripeCheckout(api_key=STRIPE_API_KEY, webhook_url=webhook_url)
+    st: CheckoutStatusResponse = await stripe.get_checkout_status(session_id)
+
+    # Update our record
+    await db.payment_transactions.update_one(
+        {"session_id": session_id},
+        {"$set": {
+            "payment_status": st.payment_status,
+            "status": st.status,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }}
+    )
+
+    # Activate subscription if paid and not previously activated
+    if st.payment_status == "paid" and tx.get("payment_status") != "paid":
+        await _activate_subscription(user["id"], tx["plan"])
+
+    state = await get_user_plan_state(user["id"])
+    return {"payment_status": st.payment_status, "status": st.status, **state}
+
+
+async def _activate_subscription(user_id: str, plan_id: str):
+    plan = SUBSCRIPTION_PLANS.get(plan_id)
+    if not plan:
+        return
+    now = datetime.now(timezone.utc)
+    existing = await db.subscriptions.find_one({"user_id": user_id}, {"_id": 0})
+    base = now
+    if existing and existing.get("pro_until"):
+        try:
+            pu = datetime.fromisoformat(existing["pro_until"])
+            if pu > now:
+                base = pu
+        except Exception:
+            pass
+    new_pro_until = base + timedelta(days=plan["days"])
+    await db.subscriptions.update_one(
+        {"user_id": user_id},
+        {"$set": {
+            "user_id": user_id,
+            "plan": "pro",
+            "last_plan_id": plan_id,
+            "pro_until": new_pro_until.isoformat(),
+            "updated_at": now.isoformat(),
+        }},
+        upsert=True,
+    )
+
+
+@api_router.post("/webhook/stripe")
+async def stripe_webhook(request: Request):
+    if not STRIPE_API_KEY:
+        return {"ok": False}
+    body = await request.body()
+    sig = request.headers.get("Stripe-Signature", "")
+    host_url = str(request.base_url).rstrip("/")
+    webhook_url = f"{host_url}/api/webhook/stripe"
+    stripe = StripeCheckout(api_key=STRIPE_API_KEY, webhook_url=webhook_url)
+    try:
+        evt = await stripe.handle_webhook(body, sig)
+    except Exception as e:
+        logging.exception("stripe webhook error")
+        raise HTTPException(status_code=400, detail="webhook error")
+
+    if evt.payment_status == "paid" and evt.session_id:
+        tx = await db.payment_transactions.find_one({"session_id": evt.session_id})
+        if tx and tx.get("payment_status") != "paid":
+            await db.payment_transactions.update_one(
+                {"session_id": evt.session_id},
+                {"$set": {"payment_status": "paid", "status": "complete"}},
+            )
+            await _activate_subscription(tx["user_id"], tx["plan"])
+    return {"ok": True}
+
+
+@api_router.get("/subscription/success", response_class=HTMLResponse)
+async def subscription_success_page():
+    return """
+    <!doctype html><html><head><meta charset='utf-8'>
+    <meta name='viewport' content='width=device-width,initial-scale=1'>
+    <title>Pagamento concluído</title>
+    <style>body{font-family:-apple-system,Helvetica,Arial;background:#0F172A;color:#fff;margin:0;display:flex;align-items:center;justify-content:center;min-height:100vh;text-align:center;padding:24px}
+    .c{max-width:420px}h1{font-size:28px;margin:0 0 8px}p{color:#94A3B8;margin:0 0 24px}
+    .btn{display:inline-block;background:#25D366;color:#fff;padding:14px 24px;border-radius:12px;text-decoration:none;font-weight:700}
+    .ico{font-size:64px;margin-bottom:16px}
+    </style></head><body><div class='c'>
+    <div class='ico'>✅</div>
+    <h1>Pagamento confirmado!</h1>
+    <p>Seu plano Pro está ativo. Você pode fechar esta aba e voltar ao app.</p>
+    </div></body></html>
+    """
+
+
+@api_router.get("/subscription/cancel", response_class=HTMLResponse)
+async def subscription_cancel_page():
+    return """
+    <!doctype html><html><head><meta charset='utf-8'>
+    <meta name='viewport' content='width=device-width,initial-scale=1'>
+    <title>Pagamento cancelado</title>
+    <style>body{font-family:-apple-system,Helvetica,Arial;background:#0F172A;color:#fff;margin:0;display:flex;align-items:center;justify-content:center;min-height:100vh;text-align:center;padding:24px}
+    .c{max-width:420px}h1{font-size:24px;margin:0 0 8px}p{color:#94A3B8;margin:0 0 24px}
+    </style></head><body><div class='c'>
+    <h1>Pagamento cancelado</h1>
+    <p>Você pode fechar esta aba e tentar novamente quando quiser.</p>
+    </div></body></html>
+    """
+
+
 @api_router.get("/")
 async def root():
     return {"service": "proposta-ja", "status": "ok"}
@@ -383,7 +663,7 @@ app.include_router(api_router)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_credentials=True,
+    allow_credentials=False,
     allow_origins=["*"],
     allow_methods=["*"],
     allow_headers=["*"],

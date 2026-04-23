@@ -104,6 +104,29 @@ export default function ProposalDetail() {
     openWhatsApp(p.client_phone, followUpMessage(p.client_name));
   };
 
+  const onDuplicate = async () => {
+    try {
+      setBusy(true);
+      const { data } = await api.post(`/proposals/${id}/duplicate`);
+      router.replace(`/proposal/${data.id}`);
+    } catch (e: any) {
+      if (e?.response?.status === 402) {
+        Alert.alert(
+          "Limite atingido",
+          e.response.data?.detail || "Faça upgrade para o plano Pro",
+          [
+            { text: "Depois", style: "cancel" },
+            { text: "Ver planos", onPress: () => router.push("/subscription") },
+          ]
+        );
+      } else {
+        Alert.alert("Erro", formatApiError(e));
+      }
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const onDelete = () => {
     Alert.alert("Excluir proposta", "Tem certeza?", [
       { text: "Cancelar", style: "cancel" },
@@ -224,6 +247,12 @@ export default function ProposalDetail() {
               onPress={onFollowUp}
             />
           )}
+          <ActionBtn
+            testID="act-duplicate"
+            icon="copy-outline"
+            label="Duplicar"
+            onPress={onDuplicate}
+          />
         </View>
 
         {p.status === "aberto" && (

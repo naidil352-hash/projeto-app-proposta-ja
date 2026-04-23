@@ -25,6 +25,9 @@ type Proposal = {
   notes?: string;
   status: string;
   total: number;
+  discount?: number;
+  payment_terms?: string;
+  validity_days?: number;
   created_at: string;
 };
 
@@ -34,7 +37,18 @@ function logoSrc(logo?: string) {
   return `data:image/png;base64,${logo}`;
 }
 
+function validUntilDate(createdAt: string, days?: number): string {
+  const d = new Date(createdAt);
+  d.setDate(d.getDate() + (days || 15));
+  return d.toLocaleDateString("pt-BR");
+}
+
 function proposalHtml(proposal: Proposal, company: Company): string {
+  const subtotal = (proposal.products || []).reduce(
+    (acc, p) => acc + (p.quantity || 0) * (p.price || 0),
+    0
+  );
+  const discount = proposal.discount || 0;
   const rows = (proposal.products || [])
     .map(
       (p, i) => `
@@ -66,7 +80,11 @@ function proposalHtml(proposal: Proposal, company: Company): string {
       .card{background:#F8FAFC;border:1px solid #E2E8F0;border-radius:12px;padding:16px;}
       table{width:100%;border-collapse:collapse;margin-top:8px;font-size:14px;}
       th{background:#0F172A;color:#fff;text-align:left;padding:10px;font-size:12px;letter-spacing:.5px;}
-      .total{font-size:22px;font-weight:700;text-align:right;margin-top:8px;}
+      .totals{margin-top:12px;font-size:14px;color:#475569;}
+      .totals .row{display:flex;justify-content:space-between;padding:4px 0;}
+      .totals .grand{margin-top:8px;padding-top:8px;border-top:1px solid #E2E8F0;color:#0F172A;font-weight:700;font-size:20px;}
+      .two{display:flex;gap:12px;}
+      .two > div{flex:1;}
       .footer{margin-top:40px;border-top:1px solid #E2E8F0;padding-top:16px;font-size:12px;color:#94A3B8;text-align:center;}
     </style>
   </head><body>
@@ -84,6 +102,7 @@ function proposalHtml(proposal: Proposal, company: Company): string {
       <div class="meta">
         <div><strong>Nº</strong> ${proposal.id.slice(0, 8).toUpperCase()}</div>
         <div><strong>Data</strong> ${formatDate(proposal.created_at)}</div>
+        <div><strong>Válida até</strong> ${validUntilDate(proposal.created_at, proposal.validity_days)}</div>
       </div>
     </div>
 
@@ -103,12 +122,16 @@ function proposalHtml(proposal: Proposal, company: Company): string {
         <thead><tr><th>#</th><th>Produto</th><th style="text-align:right;">Qtd</th><th style="text-align:right;">Preço</th><th style="text-align:right;">Subtotal</th></tr></thead>
         <tbody>${rows}</tbody>
       </table>
-      <div class="total">Total: ${formatCurrency(proposal.total)}</div>
+      <div class="totals">
+        <div class="row"><span>Subtotal</span><span>${formatCurrency(subtotal)}</span></div>
+        ${discount > 0 ? `<div class="row"><span>Desconto</span><span>- ${formatCurrency(discount)}</span></div>` : ""}
+        <div class="row grand"><span>Total</span><span>${formatCurrency(proposal.total)}</span></div>
+      </div>
     </div>
 
-    <div class="section">
-      <h2>Prazo de embarque</h2>
-      <div class="card">${escape_(proposal.shipping_deadline || "-")}</div>
+    <div class="two">
+      <div class="section"><h2>Prazo de embarque</h2><div class="card">${escape_(proposal.shipping_deadline || "-")}</div></div>
+      <div class="section"><h2>Condições de pagamento</h2><div class="card">${escape_(proposal.payment_terms || "A combinar")}</div></div>
     </div>
 
     ${
@@ -119,7 +142,7 @@ function proposalHtml(proposal: Proposal, company: Company): string {
         : ""
     }
 
-    <div class="footer">Proposta gerada em PROPOSTA JÁ</div>
+    <div class="footer">Proposta gerada em PROPOSTA JÁ · propostaja.app</div>
   </body></html>`;
 }
 
@@ -153,7 +176,6 @@ export async function printPdf(uri: string) {
 
 export async function openWhatsApp(phone: string, message: string) {
   const digits = onlyDigits(phone);
-  // Add Brazil country code if 10 or 11 digits
   const full = digits.length === 10 || digits.length === 11 ? `55${digits}` : digits;
   const url = `https://wa.me/${full}?text=${encodeURIComponent(message)}`;
   await Linking.openURL(url);
