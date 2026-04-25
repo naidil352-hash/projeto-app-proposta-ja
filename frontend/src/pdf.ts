@@ -156,11 +156,34 @@ function escape_(s: string): string {
 
 export async function generateProposalPdf(proposal: Proposal, company: Company) {
   const html = proposalHtml(proposal, company);
+  if (Platform.OS === "web") {
+    // On web, open the rendered HTML in a new window/tab so user can save/print/share with correct branding
+    if (typeof window !== "undefined") {
+      const w = window.open("", "_blank");
+      if (w) {
+        w.document.open();
+        w.document.write(html);
+        w.document.close();
+        // Give images a moment to load before opening print
+        setTimeout(() => {
+          try {
+            w.focus();
+            w.print();
+          } catch {}
+        }, 700);
+      }
+    }
+    return "web";
+  }
   const { uri } = await Print.printToFileAsync({ html });
   return uri;
 }
 
 export async function sharePdf(uri: string) {
+  if (Platform.OS === "web") {
+    // Already opened a print window in generateProposalPdf
+    return;
+  }
   if (await Sharing.isAvailableAsync()) {
     await Sharing.shareAsync(uri, { mimeType: "application/pdf", dialogTitle: "Compartilhar proposta" });
   }
@@ -168,10 +191,9 @@ export async function sharePdf(uri: string) {
 
 export async function printPdf(uri: string) {
   if (Platform.OS === "web") {
-    await Sharing.shareAsync(uri);
-  } else {
-    await Print.printAsync({ uri });
+    return;
   }
+  await Print.printAsync({ uri });
 }
 
 export async function openWhatsApp(phone: string, message: string) {
