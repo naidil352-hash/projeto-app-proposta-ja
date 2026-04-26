@@ -49,8 +49,9 @@ export default function ReferralScreen() {
     }, [load])
   );
 
+  const APP_DOMAIN = process.env.EXPO_PUBLIC_APP_DOMAIN || "https://propostaja.app";
   const link = data?.code
-    ? `https://propostaja.app/?ref=${data.code}`
+    ? `${APP_DOMAIN}/?ref=${data.code}`
     : "";
 
   const message = data?.code
