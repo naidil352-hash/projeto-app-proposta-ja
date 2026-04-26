@@ -500,6 +500,7 @@ async def list_clients(user=Depends(get_current_user)):
             }
         },
         {"$sort": {"last_proposal_at": -1}},
+        {"$limit": 1000},
     ]
     results = []
     async for doc in db.proposals.aggregate(pipeline):
