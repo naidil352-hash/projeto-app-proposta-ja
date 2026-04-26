@@ -208,7 +208,3 @@ const s = StyleSheet.create({
   trialText: { color: theme.colors.statusWonText, fontWeight: "700", fontSize: 13 },
   link: { color: theme.colors.text, fontWeight: "700", fontSize: 13, textAlign: "center", marginTop: 4 },
 });
-4 },
-  footerText: { color: theme.colors.textSec },
-  footerLink: { color: theme.colors.text, fontWeight: "700" },
-});
