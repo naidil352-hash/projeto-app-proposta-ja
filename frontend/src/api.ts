@@ -1,7 +1,7 @@
 import axios from "axios";
 import { Platform } from "react-native";
 
-const BASE = process.env.EXPO_PUBLIC_BACKEND_URL || "https://projeto-app-proposta-ja.onrender.com";
+const BASE = process.env.EXPO_PUBLIC_BACKEND_URL || "";
 
 export const api = axios.create({
   baseURL: `${BASE}/api`,

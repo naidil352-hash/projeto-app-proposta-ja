@@ -22,6 +22,8 @@ export default function Register() {
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [referralCode, setReferralCode] = useState("");
+  const [showRef, setShowRef] = useState(false);
   const [loading, setLoading] = useState(false);
 
   const onSubmit = async () => {
@@ -31,7 +33,7 @@ export default function Register() {
     }
     try {
       setLoading(true);
-      await register(name.trim(), email.trim(), password);
+      await register(name.trim(), email.trim(), password, referralCode);
     } catch (e: any) {
       Alert.alert("Erro", e.message);
     } finally {
