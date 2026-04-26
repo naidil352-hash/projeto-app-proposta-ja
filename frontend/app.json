@@ -7,7 +7,7 @@
     "icon": "./assets/images/icon.png",
     "scheme": "propostaja",
     "userInterfaceStyle": "light",
-    "newArchEnabled": true,
+    "newArchEnabled": false,
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.propostaja.app",
@@ -64,7 +64,7 @@
       ]
     ],
     "experiments": {
-      "typedRoutes": true
+      "typedRoutes": false
     }
   }
 }

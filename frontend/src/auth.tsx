@@ -4,7 +4,7 @@ import { api, saveToken, clearToken, loadToken, formatApiError } from "./api";
 type User = { id: string; email: string; name: string };
 
 type AuthCtx = {
-  user: User | null | undefined; // undefined=loading
+  user: User | null | undefined;
   login: (email: string, password: string) => Promise<void>;
   register: (name: string, email: string, password: string, referralCode?: string) => Promise<void>;
   logout: () => Promise<void>;
@@ -16,26 +16,43 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<User | null | undefined>(undefined);
 
   useEffect(() => {
+    let cancelled = false;
     (async () => {
-      const token = await loadToken();
+      let token: string | null = null;
+      try {
+        token = await loadToken();
+      } catch (e) {
+        console.log("loadToken failed:", e);
+        token = null;
+      }
+      if (cancelled) return;
       if (!token) {
         setUser(null);
         return;
       }
       try {
         const { data } = await api.get("/auth/me");
-        setUser({ id: data.id, email: data.email, name: data.name });
-      } catch {
-        await clearToken();
-        setUser(null);
+        if (!cancelled) setUser({ id: data.id, email: data.email, name: data.name });
+      } catch (e) {
+        try {
+          await clearToken();
+        } catch {}
+        if (!cancelled) setUser(null);
       }
     })();
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   const login = async (email: string, password: string) => {
     try {
       const { data } = await api.post("/auth/login", { email, password });
-      await saveToken(data.token);
+      try {
+        await saveToken(data.token);
+      } catch (e) {
+        console.log("saveToken failed:", e);
+      }
       setUser(data.user);
     } catch (e) {
       throw new Error(formatApiError(e));
@@ -47,7 +64,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       const payload: any = { name, email, password };
       if (referralCode && referralCode.trim()) payload.referral_code = referralCode.trim().toUpperCase();
       const { data } = await api.post("/auth/register", payload);
-      await saveToken(data.token);
+      try {
+        await saveToken(data.token);
+      } catch (e) {
+        console.log("saveToken failed:", e);
+      }
       setUser(data.user);
     } catch (e) {
       throw new Error(formatApiError(e));
@@ -55,7 +76,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   };
 
   const logout = async () => {
-    await clearToken();
+    try {
+      await clearToken();
+    } catch {}
     setUser(null);
   };
 
