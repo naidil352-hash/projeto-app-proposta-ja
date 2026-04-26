@@ -15,14 +15,14 @@
       },
       "channel": "preview",
       "env": {
-        "EXPO_PUBLIC_BACKEND_URL": "https://quick-quote-pro-5.preview.emergentagent.com"
+        "EXPO_PUBLIC_BACKEND_URL": "https://projeto-app-proposta-ja.onrender.com"
       }
     },
     "production": {
       "autoIncrement": true,
       "channel": "production",
       "env": {
-        "EXPO_PUBLIC_BACKEND_URL": "https://SEU-BACKEND-EM-PRODUCAO.onrender.com"
+        "EXPO_PUBLIC_BACKEND_URL": "https://projeto-app-proposta-ja.onrender.com"
       }
     }
   },

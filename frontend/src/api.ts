@@ -4,7 +4,10 @@ import * as SecureStore from "expo-secure-store";
 
 const BASE = process.env.EXPO_PUBLIC_BACKEND_URL as string;
 
-export const api = axios.create({ baseURL: `${BASE}/api` });
+export const api = axios.create({
+  baseURL: `${BASE}/api`,
+  timeout: 60000, // 60s — Render free tier may take up to 30s on cold start
+});
 
 const TOKEN_KEY = "propostaja_token";
 const isWeb = Platform.OS === "web";

@@ -13,10 +13,14 @@ Notifications.setNotificationHandler({
 
 export async function ensureNotificationPermission(): Promise<boolean> {
   if (Platform.OS === "web") return false;
-  const { status } = await Notifications.getPermissionsAsync();
-  if (status === "granted") return true;
-  const req = await Notifications.requestPermissionsAsync();
-  return req.status === "granted";
+  try {
+    const { status } = await Notifications.getPermissionsAsync();
+    if (status === "granted") return true;
+    const req = await Notifications.requestPermissionsAsync();
+    return req.status === "granted";
+  } catch {
+    return false;
+  }
 }
 
 const SCHEDULE_TAG = "propostaja-followup-3days";
@@ -24,15 +28,14 @@ const SCHEDULE_TAG = "propostaja-followup-3days";
 export async function scheduleFollowupReminder() {
   if (Platform.OS === "web") return;
   try {
-    // Cancel any previously scheduled reminder with our tag
     const all = await Notifications.getAllScheduledNotificationsAsync();
     for (const n of all) {
       if (n.content?.data && (n.content.data as any).tag === SCHEDULE_TAG) {
         await Notifications.cancelScheduledNotificationAsync(n.identifier);
       }
     }
-    // Schedule a recurring reminder every 3 days (in seconds)
     const THREE_DAYS = 60 * 60 * 24 * 3;
+    // Simple trigger format works across all Expo SDK versions
     await Notifications.scheduleNotificationAsync({
       content: {
         title: "Hora de fazer follow-up 💬",
@@ -40,13 +43,13 @@ export async function scheduleFollowupReminder() {
         data: { tag: SCHEDULE_TAG },
       },
       trigger: {
-        type: Notifications.SchedulableTriggerInputTypes.TIME_INTERVAL,
         seconds: THREE_DAYS,
         repeats: true,
-      },
+      } as any,
     });
   } catch (e) {
-    // silently ignore on unsupported environments
+    // Never let notification scheduling crash the app
+    console.log("scheduleFollowupReminder ignored:", e);
   }
 }
 
