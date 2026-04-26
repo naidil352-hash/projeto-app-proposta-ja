@@ -25,8 +25,12 @@ function Gate({ children }: { children: React.ReactNode }) {
   React.useEffect(() => {
     if (!user) return;
     (async () => {
-      const ok = await ensureNotificationPermission();
-      if (ok) await scheduleFollowupReminder();
+      try {
+        const ok = await ensureNotificationPermission();
+        if (ok) await scheduleFollowupReminder();
+      } catch (e) {
+        console.log("notifications setup ignored:", e);
+      }
     })();
   }, [user]);
 
