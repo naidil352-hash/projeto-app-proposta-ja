@@ -8,6 +8,8 @@
     "scheme": "propostaja",
     "userInterfaceStyle": "light",
     "newArchEnabled": true,
+    "runtimeVersion": "1.0.0",
+
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.propostaja.app",
@@ -17,6 +19,7 @@
         "ITSAppUsesNonExemptEncryption": false
       }
     },
+
     "android": {
       "package": "com.propostaja.app",
       "adaptiveIcon": {
@@ -28,14 +31,17 @@
         "android.permission.READ_EXTERNAL_STORAGE",
         "android.permission.WRITE_EXTERNAL_STORAGE",
         "android.permission.POST_NOTIFICATIONS",
-        "android.permission.SCHEDULE_EXACT_ALARM"
+        "android.permission.SCHEDULE_EXACT_ALARM",
+        "android.permission.RECORD_AUDIO"
       ]
     },
+
     "web": {
       "bundler": "metro",
       "output": "static",
       "favicon": "./assets/images/favicon.png"
     },
+
     "plugins": [
       "expo-router",
       "expo-secure-store",
@@ -63,8 +69,20 @@
         }
       ]
     ],
+
     "experiments": {
       "typedRoutes": true
+    },
+
+    "extra": {
+      "router": {},
+      "eas": {
+        "projectId": "f53c1bf3-4a53-41b4-8484-cc1020fecc99"
+      }
+    },
+
+    "updates": {
+      "url": "https://u.expo.dev/f53c1bf3-4a53-41b4-8484-cc1020fecc99"
     }
   }
 }
