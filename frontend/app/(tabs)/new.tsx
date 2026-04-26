@@ -23,6 +23,7 @@ import {
   parseCurrency,
   parseNumber,
 } from "../../src/masks";
+import UpgradeModal from "../../src/UpgradeModal";
 
 type Product = { name: string; quantity: string; price: string };
 
@@ -38,6 +39,8 @@ export default function NewProposal() {
   const [validity, setValidity] = useState("15");
   const [products, setProducts] = useState<Product[]>([{ name: "", quantity: "", price: "" }]);
   const [saving, setSaving] = useState(false);
+  const [upgradeOpen, setUpgradeOpen] = useState(false);
+  const [upgradeMsg, setUpgradeMsg] = useState<string | undefined>();
 
   const addProduct = () => setProducts([...products, { name: "", quantity: "", price: "" }]);
   const removeProduct = (i: number) => {
@@ -100,14 +103,8 @@ export default function NewProposal() {
       router.push(`/proposal/${data.id}`);
     } catch (e: any) {
       if (e?.response?.status === 402) {
-        Alert.alert(
-          "Limite atingido",
-          e.response.data?.detail || "Faça upgrade para o plano Pro",
-          [
-            { text: "Depois", style: "cancel" },
-            { text: "Ver planos", onPress: () => router.push("/subscription") },
-          ]
-        );
+        setUpgradeMsg(e.response.data?.detail);
+        setUpgradeOpen(true);
       } else {
         Alert.alert("Erro", formatApiError(e));
       }
@@ -278,6 +275,11 @@ export default function NewProposal() {
           </TouchableOpacity>
         </View>
       </KeyboardAvoidingView>
+      <UpgradeModal
+        visible={upgradeOpen}
+        message={upgradeMsg}
+        onClose={() => setUpgradeOpen(false)}
+      />
     </SafeAreaView>
   );
 }

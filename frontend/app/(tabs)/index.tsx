@@ -21,6 +21,10 @@ type Stats = {
   open_value: number;
   month_won_value: number;
   stale_count: number;
+  is_pro?: boolean;
+  month_count?: number;
+  month_quota?: number | null;
+  pro_until?: string | null;
 };
 
 export default function Dashboard() {
@@ -69,6 +73,53 @@ export default function Dashboard() {
         </View>
 
         {err && <Text style={s.error}>{err}</Text>}
+
+        {!stats?.is_pro && stats && (stats.month_quota || 10) > 0 && (
+          <TouchableOpacity
+            style={s.usageCard}
+            onPress={() => router.push("/subscription")}
+            testID="usage-banner"
+          >
+            <View style={s.usageHead}>
+              <Text style={s.usageTitle}>
+                {stats.month_count || 0}/{stats.month_quota || 10} propostas este mês
+              </Text>
+              <View style={s.upBadge}>
+                <Ionicons name="star" size={12} color="#fff" />
+                <Text style={s.upBadgeText}>Upgrade</Text>
+              </View>
+            </View>
+            <View style={s.bar}>
+              <View
+                style={[
+                  s.barFill,
+                  {
+                    width: `${Math.min(
+                      100,
+                      Math.round(
+                        ((stats.month_count || 0) / (stats.month_quota || 10)) * 100
+                      )
+                    )}%`,
+                  },
+                ]}
+              />
+            </View>
+            <Text style={s.usageHint}>
+              {(stats.month_count || 0) >= (stats.month_quota || 10)
+                ? "Limite atingido — toque para liberar propostas ilimitadas"
+                : "Toque para conhecer o plano Pro · ilimitado"}
+            </Text>
+          </TouchableOpacity>
+        )}
+
+        {stats?.is_pro && (
+          <View style={s.proBanner} testID="pro-active-banner">
+            <Ionicons name="star" size={18} color="#fff" />
+            <Text style={s.proBannerText}>
+              Plano Pro ativo · {stats.pro_until ? "renove até " + new Date(stats.pro_until).toLocaleDateString("pt-BR") : ""}
+            </Text>
+          </View>
+        )}
 
         {stats?.stale_count ? (
           <TouchableOpacity
@@ -240,4 +291,36 @@ const s = StyleSheet.create({
     gap: 8,
   },
   newBtnText: { color: "#fff", fontSize: 16, fontWeight: "700" },
+  usageCard: {
+    backgroundColor: "#fff",
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    padding: 16,
+    borderRadius: 14,
+    gap: 8,
+  },
+  usageHead: { flexDirection: "row", justifyContent: "space-between", alignItems: "center" },
+  usageTitle: { fontSize: 14, color: theme.colors.text, fontWeight: "700" },
+  upBadge: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    backgroundColor: theme.colors.primary,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 999,
+  },
+  upBadgeText: { color: "#fff", fontSize: 11, fontWeight: "700" },
+  bar: { height: 8, backgroundColor: theme.colors.surfaceAlt, borderRadius: 4 },
+  barFill: { height: 8, backgroundColor: theme.colors.primary, borderRadius: 4 },
+  usageHint: { fontSize: 12, color: theme.colors.textSec },
+  proBanner: {
+    flexDirection: "row",
+    gap: 8,
+    alignItems: "center",
+    padding: 14,
+    backgroundColor: theme.colors.primary,
+    borderRadius: 12,
+  },
+  proBannerText: { color: "#fff", fontWeight: "700" },
 });

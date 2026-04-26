@@ -25,6 +25,7 @@ import {
   followUpMessage,
   proposalShareMessage,
 } from "../../src/pdf";
+import UpgradeModal from "../../src/UpgradeModal";
 
 export default function ProposalDetail() {
   const { id } = useLocalSearchParams<{ id: string }>();
@@ -35,6 +36,8 @@ export default function ProposalDetail() {
   const [lostModal, setLostModal] = useState(false);
   const [lostReason, setLostReason] = useState("");
   const [busy, setBusy] = useState(false);
+  const [upgradeOpen, setUpgradeOpen] = useState(false);
+  const [upgradeMsg, setUpgradeMsg] = useState<string | undefined>();
 
   const load = useCallback(async () => {
     try {
@@ -111,14 +114,8 @@ export default function ProposalDetail() {
       router.replace(`/proposal/${data.id}`);
     } catch (e: any) {
       if (e?.response?.status === 402) {
-        Alert.alert(
-          "Limite atingido",
-          e.response.data?.detail || "Faça upgrade para o plano Pro",
-          [
-            { text: "Depois", style: "cancel" },
-            { text: "Ver planos", onPress: () => router.push("/subscription") },
-          ]
-        );
+        setUpgradeMsg(e.response.data?.detail);
+        setUpgradeOpen(true);
       } else {
         Alert.alert("Erro", formatApiError(e));
       }
@@ -330,6 +327,11 @@ export default function ProposalDetail() {
           </View>
         </KeyboardAvoidingView>
       </Modal>
+      <UpgradeModal
+        visible={upgradeOpen}
+        message={upgradeMsg}
+        onClose={() => setUpgradeOpen(false)}
+      />
     </SafeAreaView>
   );
 }
