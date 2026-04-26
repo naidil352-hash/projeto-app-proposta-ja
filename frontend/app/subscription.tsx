@@ -188,7 +188,7 @@ export default function SubscriptionScreen() {
             <View key={p.id} style={[s.planCard, !monthly && s.planCardBest]}>
               {!monthly && (
                 <View style={s.best}>
-                  <Text style={s.bestText}>🔥 2 meses grátis</Text>
+                  <Text style={s.bestText}>🔥 MAIS ESCOLHIDO · 2 meses grátis</Text>
                 </View>
               )}
               <Text style={s.planLabel}>{p.label}</Text>

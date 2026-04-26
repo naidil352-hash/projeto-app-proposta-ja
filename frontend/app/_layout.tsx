@@ -51,6 +51,7 @@ export default function RootLayout() {
             <Stack.Screen name="(tabs)" />
             <Stack.Screen name="proposal/[id]" options={{ headerShown: false, presentation: "card" }} />
             <Stack.Screen name="subscription" options={{ headerShown: false, presentation: "modal" }} />
+            <Stack.Screen name="referral" options={{ headerShown: false, presentation: "modal" }} />
           </Stack>
         </Gate>
       </AuthProvider>

@@ -163,6 +163,21 @@ export default function Profile() {
             <Ionicons name="chevron-forward" size={20} color={theme.colors.textMuted} />
           </TouchableOpacity>
 
+          <TouchableOpacity
+            style={s.planCta}
+            onPress={() => router.push("/referral")}
+            testID="open-referral"
+          >
+            <View style={[s.planIcon, { backgroundColor: theme.colors.whatsapp }]}>
+              <Ionicons name="gift" size={18} color="#fff" />
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text style={s.planTitle}>Indique e ganhe 30 dias Pro</Text>
+              <Text style={s.planDesc}>Você e seu amigo ganham. Compartilhe agora 🎁</Text>
+            </View>
+            <Ionicons name="chevron-forward" size={20} color={theme.colors.textMuted} />
+          </TouchableOpacity>
+
           <View style={s.userCard}>
             <Text style={s.userLabel}>Conta</Text>
             <Text style={s.userName}>{user?.name}</Text>

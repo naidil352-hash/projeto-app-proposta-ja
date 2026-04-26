@@ -86,6 +86,30 @@ export default function Register() {
               onChangeText={setPassword}
             />
 
+            <View style={s.trialBadge}>
+              <Ionicons name="gift" size={16} color={theme.colors.statusWonText} />
+              <Text style={s.trialText}>7 dias de Pro grátis ao se cadastrar 🎁</Text>
+            </View>
+
+            {!showRef ? (
+              <TouchableOpacity onPress={() => setShowRef(true)} testID="show-referral">
+                <Text style={s.link}>Tem código de indicação? Toque aqui</Text>
+              </TouchableOpacity>
+            ) : (
+              <>
+                <Text style={s.label}>Código de indicação (opcional)</Text>
+                <TextInput
+                  testID="register-referral"
+                  style={s.input}
+                  placeholder="Ex: ABC12345"
+                  placeholderTextColor={theme.colors.textMuted}
+                  autoCapitalize="characters"
+                  value={referralCode}
+                  onChangeText={(v) => setReferralCode(v.toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 8))}
+                />
+              </>
+            )}
+
             <TouchableOpacity
               testID="register-submit"
               style={[s.btn, loading && { opacity: 0.7 }]}
@@ -168,6 +192,23 @@ const s = StyleSheet.create({
   },
   btnText: { color: "#fff", fontSize: 16, fontWeight: "700" },
   footer: { flexDirection: "row", justifyContent: "center", gap: 8, marginTop: 24 },
+  footerText: { color: theme.colors.textSec },
+  footerLink: { color: theme.colors.text, fontWeight: "700" },
+  trialBadge: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    backgroundColor: "#ECFDF5",
+    borderWidth: 1,
+    borderColor: "#A7F3D0",
+    padding: 12,
+    borderRadius: 12,
+    marginTop: 8,
+  },
+  trialText: { color: theme.colors.statusWonText, fontWeight: "700", fontSize: 13 },
+  link: { color: theme.colors.text, fontWeight: "700", fontSize: 13, textAlign: "center", marginTop: 4 },
+});
+4 },
   footerText: { color: theme.colors.textSec },
   footerLink: { color: theme.colors.text, fontWeight: "700" },
 });

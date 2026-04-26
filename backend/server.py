@@ -86,7 +86,7 @@ async def get_current_user(request: Request) -> dict:
 
 
 async def get_user_plan_state(user_id: str) -> dict:
-    """Returns {plan, pro_until, month_count, month_quota, is_pro}."""
+    """Returns {plan, pro_until, month_count, month_quota, is_pro, is_trial}."""
     sub = await db.subscriptions.find_one({"user_id": user_id}, {"_id": 0})
     now = datetime.now(timezone.utc)
     month_start = datetime(now.year, now.month, 1, tzinfo=timezone.utc)
@@ -94,6 +94,7 @@ async def get_user_plan_state(user_id: str) -> dict:
         {"user_id": user_id, "created_at": {"$gte": month_start.isoformat()}}
     )
     is_pro = False
+    is_trial = False
     pro_until = None
     if sub and sub.get("pro_until"):
         try:
@@ -101,6 +102,8 @@ async def get_user_plan_state(user_id: str) -> dict:
             if pu > now:
                 is_pro = True
                 pro_until = sub["pro_until"]
+                if sub.get("last_plan_id") == "trial":
+                    is_trial = True
         except Exception:
             pass
     return {
@@ -109,6 +112,7 @@ async def get_user_plan_state(user_id: str) -> dict:
         "month_count": month_count,
         "month_quota": None if is_pro else FREE_MONTHLY_QUOTA,
         "is_pro": is_pro,
+        "is_trial": is_trial,
     }
 
 
@@ -117,6 +121,7 @@ class RegisterIn(BaseModel):
     name: str
     email: EmailStr
     password: str = Field(min_length=6)
+    referral_code: Optional[str] = None
 
 
 class LoginIn(BaseModel):
@@ -168,10 +173,20 @@ class CheckoutIn(BaseModel):
     plan: str  # pro_monthly | pro_yearly
 
 
+TRIAL_DAYS = 7
+REFERRAL_REWARD_DAYS = 30
+
+
+def make_referral_code(user_id: str) -> str:
+    """Short, readable referral code from user_id."""
+    return user_id.replace("-", "")[:8].upper()
+
+
 # ---------- Startup ----------
 @app.on_event("startup")
 async def on_startup():
     await db.users.create_index("email", unique=True)
+    await db.users.create_index("referral_code", unique=True, sparse=True)
     await db.proposals.create_index("user_id")
     await db.proposals.create_index("created_at")
     await db.subscriptions.create_index("user_id", unique=True)
@@ -191,14 +206,27 @@ async def register(data: RegisterIn):
     if existing:
         raise HTTPException(status_code=400, detail="Email já cadastrado")
     user_id = str(uuid.uuid4())
+    referral_code = make_referral_code(user_id)
+    now = datetime.now(timezone.utc)
+
+    referred_by = None
+    if data.referral_code:
+        ref_user = await db.users.find_one({"referral_code": data.referral_code.upper().strip()})
+        if ref_user and ref_user["id"] != user_id:
+            referred_by = ref_user["id"]
+
     doc = {
         "id": user_id,
         "email": email,
         "name": data.name,
         "password_hash": hash_password(data.password),
-        "created_at": datetime.now(timezone.utc).isoformat(),
+        "referral_code": referral_code,
+        "referred_by": referred_by,
+        "created_at": now.isoformat(),
     }
     await db.users.insert_one(doc)
+
+    # Initialize empty company profile
     await db.companies.update_one(
         {"user_id": user_id},
         {"$setOnInsert": {
@@ -212,6 +240,18 @@ async def register(data: RegisterIn):
         }},
         upsert=True,
     )
+
+    # Grant 7-day Pro trial automatically
+    trial_until = now + timedelta(days=TRIAL_DAYS)
+    await db.subscriptions.insert_one({
+        "user_id": user_id,
+        "plan": "pro",
+        "last_plan_id": "trial",
+        "pro_until": trial_until.isoformat(),
+        "trial_used": True,
+        "updated_at": now.isoformat(),
+    })
+
     token = create_access_token(user_id, email)
     return {"token": token, "user": {"id": user_id, "email": email, "name": data.name}}
 
@@ -579,7 +619,8 @@ async def _activate_subscription(user_id: str, plan_id: str):
     now = datetime.now(timezone.utc)
     existing = await db.subscriptions.find_one({"user_id": user_id}, {"_id": 0})
     base = now
-    if existing and existing.get("pro_until"):
+    # If currently on trial, replace base with now (trial does not stack)
+    if existing and existing.get("pro_until") and existing.get("last_plan_id") != "trial":
         try:
             pu = datetime.fromisoformat(existing["pro_until"])
             if pu > now:
@@ -594,6 +635,38 @@ async def _activate_subscription(user_id: str, plan_id: str):
             "plan": "pro",
             "last_plan_id": plan_id,
             "pro_until": new_pro_until.isoformat(),
+            "updated_at": now.isoformat(),
+        }},
+        upsert=True,
+    )
+
+    # Reward referrer on first paid subscription (one-time)
+    user = await db.users.find_one({"id": user_id}, {"_id": 0})
+    if user and user.get("referred_by") and not user.get("referral_rewarded"):
+        ref_id = user["referred_by"]
+        await db.users.update_one({"id": user_id}, {"$set": {"referral_rewarded": True}})
+        await _add_pro_days(ref_id, REFERRAL_REWARD_DAYS, source="referral")
+
+
+async def _add_pro_days(user_id: str, days: int, source: str = "bonus"):
+    now = datetime.now(timezone.utc)
+    existing = await db.subscriptions.find_one({"user_id": user_id}, {"_id": 0})
+    base = now
+    if existing and existing.get("pro_until"):
+        try:
+            pu = datetime.fromisoformat(existing["pro_until"])
+            if pu > now:
+                base = pu
+        except Exception:
+            pass
+    new_until = base + timedelta(days=days)
+    await db.subscriptions.update_one(
+        {"user_id": user_id},
+        {"$set": {
+            "user_id": user_id,
+            "plan": "pro",
+            "last_plan_id": existing.get("last_plan_id") if existing else source,
+            "pro_until": new_until.isoformat(),
             "updated_at": now.isoformat(),
         }},
         upsert=True,
@@ -662,6 +735,38 @@ async def subscription_cancel_page():
 @api_router.get("/")
 async def root():
     return {"service": "proposta-ja", "status": "ok"}
+
+
+# ---------- Referrals ----------
+@api_router.get("/referrals/me")
+async def referrals_me(user=Depends(get_current_user)):
+    user_doc = await db.users.find_one({"id": user["id"]}, {"_id": 0})
+    code = user_doc.get("referral_code") if user_doc else None
+    if not code:
+        # Backfill for legacy users
+        code = make_referral_code(user["id"])
+        await db.users.update_one({"id": user["id"]}, {"$set": {"referral_code": code}})
+
+    invited_total = await db.users.count_documents({"referred_by": user["id"]})
+    converted = await db.users.count_documents({"referred_by": user["id"], "referral_rewarded": True})
+    bonus_days = converted * REFERRAL_REWARD_DAYS
+
+    return {
+        "code": code,
+        "invited_total": invited_total,
+        "converted": converted,
+        "bonus_days_earned": bonus_days,
+        "reward_days_per_conversion": REFERRAL_REWARD_DAYS,
+    }
+
+
+@api_router.get("/referrals/lookup/{code}")
+async def referral_lookup(code: str):
+    """Public: lets a registering user verify a code is valid before submit."""
+    user_doc = await db.users.find_one({"referral_code": code.upper().strip()}, {"_id": 0})
+    if not user_doc:
+        raise HTTPException(status_code=404, detail="Código inválido")
+    return {"valid": True, "referrer_name": user_doc.get("name", "").split(" ")[0] or "Alguém"}
 
 
 # ---------- Register router + middleware ----------

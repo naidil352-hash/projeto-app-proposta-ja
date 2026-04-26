@@ -6,7 +6,7 @@ type User = { id: string; email: string; name: string };
 type AuthCtx = {
   user: User | null | undefined; // undefined=loading
   login: (email: string, password: string) => Promise<void>;
-  register: (name: string, email: string, password: string) => Promise<void>;
+  register: (name: string, email: string, password: string, referralCode?: string) => Promise<void>;
   logout: () => Promise<void>;
 };
 
@@ -42,9 +42,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   };
 
-  const register = async (name: string, email: string, password: string) => {
+  const register = async (name: string, email: string, password: string, referralCode?: string) => {
     try {
-      const { data } = await api.post("/auth/register", { name, email, password });
+      const payload: any = { name, email, password };
+      if (referralCode && referralCode.trim()) payload.referral_code = referralCode.trim().toUpperCase();
+      const { data } = await api.post("/auth/register", payload);
       await saveToken(data.token);
       setUser(data.user);
     } catch (e) {
