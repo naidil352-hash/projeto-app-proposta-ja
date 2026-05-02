@@ -20,7 +20,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     (async () => {
       let token: string | null = null;
       try {
-        token = await loadToken();
+        // Timeout hard após 4s para que o app NUNCA fique infinitamente na tela de loading
+        token = await Promise.race<string | null>([
+          loadToken(),
+          new Promise<null>((resolve) => setTimeout(() => resolve(null), 4000)),
+        ]);
       } catch (e) {
         console.log("loadToken failed:", e);
         token = null;
@@ -31,7 +35,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         return;
       }
       try {
-        const { data } = await api.get("/auth/me");
+        const { data } = await api.get("/auth/me", { timeout: 20000 });
         if (!cancelled) setUser({ id: data.id, email: data.email, name: data.name });
       } catch (e) {
         try {

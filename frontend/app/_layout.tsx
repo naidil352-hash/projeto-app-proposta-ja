@@ -67,6 +67,7 @@ function Gate({ children }: { children: React.ReactNode }) {
     return (
       <View style={styles.loading} testID="root-loading">
         <ActivityIndicator size="large" color={theme.colors.primary} />
+        <Text style={styles.loadingText}>Carregando PROPOSTA JÁ...</Text>
       </View>
     );
   }
@@ -96,6 +97,7 @@ export default function RootLayout() {
 
 const styles = StyleSheet.create({
   loading: { flex: 1, backgroundColor: theme.colors.bg, alignItems: "center", justifyContent: "center" },
+  loadingText: { marginTop: 16, color: theme.colors.textSec, fontSize: 14 },
   errRoot: {
     flex: 1,
     backgroundColor: theme.colors.bg,
