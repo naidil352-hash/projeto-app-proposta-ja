@@ -19,21 +19,31 @@ import { theme } from "../../src/theme";
 
 export default function Register() {
   const { register } = useAuth();
+
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [loading, setLoading] = useState(false);
+
+  // ✅ CORREÇÃO DO CRASH
+  const [showRef, setShowRef] = useState(false);
+  const [referralCode, setReferralCode] = useState("");
 
   const onSubmit = async () => {
     if (!name || !email || password.length < 6) {
       Alert.alert("Atenção", "Preencha nome, email e senha (mín. 6 caracteres)");
       return;
     }
+
     try {
       setLoading(true);
-      await register(name.trim(), email.trim(), password);
+
+      // 🔥 proteção extra (evita crash silencioso)
+      await register(name.trim(), email.trim(), password, referralCode);
+
     } catch (e: any) {
-      Alert.alert("Erro", e.message);
+      console.log("ERRO REGISTER:", e);
+      Alert.alert("Erro", e?.message || "Erro ao criar conta");
     } finally {
       setLoading(false);
     }
@@ -57,16 +67,15 @@ export default function Register() {
           <View style={s.form}>
             <Text style={s.label}>Nome</Text>
             <TextInput
-              testID="register-name"
               style={s.input}
               placeholder="Seu nome"
               placeholderTextColor={theme.colors.textMuted}
               value={name}
               onChangeText={setName}
             />
+
             <Text style={s.label}>Email</Text>
             <TextInput
-              testID="register-email"
               style={s.input}
               placeholder="seu@email.com"
               placeholderTextColor={theme.colors.textMuted}
@@ -75,9 +84,9 @@ export default function Register() {
               value={email}
               onChangeText={setEmail}
             />
+
             <Text style={s.label}>Senha</Text>
             <TextInput
-              testID="register-password"
               style={s.input}
               placeholder="Mínimo 6 caracteres"
               placeholderTextColor={theme.colors.textMuted}
@@ -92,26 +101,28 @@ export default function Register() {
             </View>
 
             {!showRef ? (
-              <TouchableOpacity onPress={() => setShowRef(true)} testID="show-referral">
+              <TouchableOpacity onPress={() => setShowRef(true)}>
                 <Text style={s.link}>Tem código de indicação? Toque aqui</Text>
               </TouchableOpacity>
             ) : (
               <>
                 <Text style={s.label}>Código de indicação (opcional)</Text>
                 <TextInput
-                  testID="register-referral"
                   style={s.input}
                   placeholder="Ex: ABC12345"
                   placeholderTextColor={theme.colors.textMuted}
                   autoCapitalize="characters"
                   value={referralCode}
-                  onChangeText={(v) => setReferralCode(v.toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 8))}
+                  onChangeText={(v) =>
+                    setReferralCode(
+                      v.toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 8)
+                    )
+                  }
                 />
               </>
             )}
 
             <TouchableOpacity
-              testID="register-submit"
               style={[s.btn, loading && { opacity: 0.7 }]}
               onPress={onSubmit}
               disabled={loading}
@@ -129,7 +140,7 @@ export default function Register() {
             <View style={s.footer}>
               <Text style={s.footerText}>Já tem conta?</Text>
               <Link href="/(auth)/login" asChild>
-                <TouchableOpacity testID="goto-login">
+                <TouchableOpacity>
                   <Text style={s.footerLink}>Entrar</Text>
                 </TouchableOpacity>
               </Link>
