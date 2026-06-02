@@ -43,6 +43,22 @@ export function maskCurrency(v: string): string {
   return `${intFmt},${dec}`;
 }
 
+export function formatCurrencyFromBackend(v: string | number): string {
+  if (v === null || v === undefined || v === "") return "";
+
+  const clean = String(v)
+    .replace(/\./g, "")
+    .replace(",", ".");
+
+  const n = parseFloat(clean);
+  if (!Number.isFinite(n)) return "";
+
+  return n.toLocaleString("pt-BR", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  });
+}
+
 export function parseCurrency(v: string): number {
   if (!v) return 0;
   // Accept both formats

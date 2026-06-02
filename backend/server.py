@@ -20,6 +20,10 @@ from pydantic import BaseModel, Field, EmailStr
 
 import stripe
 
+import cloudinary
+import cloudinary.uploader
+
+from fastapi import UploadFile, File
 
 # ---------- DB ----------
 mongo_url = os.environ["MONGO_URL"]
@@ -39,6 +43,29 @@ STRIPE_API_KEY = os.environ.get("STRIPE_API_KEY", "")
 STRIPE_WEBHOOK_SECRET = os.environ.get("STRIPE_WEBHOOK_SECRET", "")
 if STRIPE_API_KEY:
     stripe.api_key = STRIPE_API_KEY
+
+# ---------- Cloudinary ----------
+CLOUDINARY_CLOUD_NAME = os.environ.get(
+    "CLOUDINARY_CLOUD_NAME",
+    ""
+)
+
+CLOUDINARY_API_KEY = os.environ.get(
+    "CLOUDINARY_API_KEY",
+    ""
+)
+
+CLOUDINARY_API_SECRET = os.environ.get(
+    "CLOUDINARY_API_SECRET",
+    ""
+)
+
+cloudinary.config(
+    cloud_name=CLOUDINARY_CLOUD_NAME,
+    api_key=CLOUDINARY_API_KEY,
+    api_secret=CLOUDINARY_API_SECRET,
+    secure=True,
+)
 
 # Fixed subscription packages (price defined server-side)
 SUBSCRIPTION_PLANS = {
@@ -157,9 +184,10 @@ class ProposalIn(BaseModel):
     products: List[Product]
     shipping_deadline: str
     notes: Optional[str] = ""
-    discount: Optional[float] = 0.0  # absolute BRL discount
-    payment_terms: Optional[str] = ""  # condições de pagamento
-    validity_days: Optional[int] = 15  # validade da proposta em dias
+    discount: Optional[float] = 0.0
+    payment_terms: Optional[str] = ""
+    validity_days: Optional[int] = 15
+    images: Optional[List[str]] = []
 
 
 class StatusUpdate(BaseModel):
@@ -332,6 +360,7 @@ async def create_proposal(data: ProposalIn, user=Depends(get_current_user)):
         "discount": float(data.discount or 0),
         "payment_terms": data.payment_terms or "",
         "validity_days": int(data.validity_days or 15),
+        "images": data.images or [],
         "status": "aberto",
         "lost_reason": "",
         "total": _proposal_total(products, data.discount or 0),
@@ -377,6 +406,7 @@ async def update_proposal(pid: str, data: ProposalIn, user=Depends(get_current_u
         "discount": float(data.discount or 0),
         "payment_terms": data.payment_terms or "",
         "validity_days": int(data.validity_days or 15),
+        "images": data.images or [],
         "total": _proposal_total(products, data.discount or 0),
         "updated_at": datetime.now(timezone.utc).isoformat(),
     }
@@ -441,7 +471,37 @@ async def delete_proposal(pid: str, user=Depends(get_current_user)):
     if res.deleted_count == 0:
         raise HTTPException(status_code=404, detail="Proposta não encontrada")
     return {"ok": True}
+# ---------- Upload image ----------
+@api_router.post("/upload/image")
+async def upload_image(
+    file: UploadFile = File(...),
+    user=Depends(get_current_user),
+):
 
+    try:
+
+        result = cloudinary.uploader.upload(
+            file.file,
+
+            folder="propostaapp",
+
+            resource_type="image",
+        )
+
+        return {
+            "url": result["secure_url"]
+        }
+
+    except Exception as e:
+
+        logging.exception(
+            "cloudinary upload error"
+        )
+
+        raise HTTPException(
+            status_code=500,
+            detail=str(e),
+        )
 
 # ---------- Stats / Dashboard ----------
 @api_router.get("/stats")
