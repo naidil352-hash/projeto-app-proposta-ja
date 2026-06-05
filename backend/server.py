@@ -141,6 +141,52 @@ async def get_user_plan_state(user_id: str) -> dict:
     }
 
 
+async def get_company_id(user_id: str) -> str | None:
+    """Return the company.id for the given user_id, generating it if missing."""
+    company = await db.companies.find_one({"user_id": user_id}, {"_id": 0})
+    if not company:
+        return None
+    if not company.get("id"):
+        company_id = str(uuid.uuid4())
+        await db.companies.update_one(
+            {"user_id": user_id},
+            {"$set": {"id": company_id}},
+        )
+        return company_id
+    return company["id"]
+
+
+async def ensure_company_ids() -> None:
+    """Backfill missing company ids for existing company documents."""
+    print("START ensure_company_ids")
+    cursor = db.companies.find({"id": {"$exists": False}}, {"_id": 0, "user_id": 1})
+    async for doc in cursor:
+        if not doc.get("user_id"):
+            continue
+        print("Company without id:", doc["user_id"])
+        generated_id = str(uuid.uuid4())
+        print("Generated company id:", generated_id)
+        await db.companies.update_one(
+            {"user_id": doc["user_id"]},
+            {"$set": {"id": generated_id}},
+        )
+    print("END ensure_company_ids")
+
+
+async def get_scope_filter(user: dict) -> dict:
+    """Return scope filter based on user's company_id or user_id.
+    
+    Args:
+        user: User document with 'id' and optional 'company_id'
+    
+    Returns:
+        dict: {"company_id": company_id} or {"user_id": user_id}
+    """
+    if user.get("company_id"):
+        return {"company_id": user["company_id"]}
+    return {"user_id": user["id"]}
+
+
 # ---------- Models ----------
 class RegisterIn(BaseModel):
     name: str
@@ -213,10 +259,13 @@ def make_referral_code(user_id: str) -> str:
 async def on_startup():
     await db.users.create_index("email", unique=True)
     await db.users.create_index("referral_code", unique=True, sparse=True)
+    await db.users.create_index("company_id", sparse=True)
+    await db.users.create_index("role", sparse=True)
     await db.proposals.create_index("user_id")
     await db.proposals.create_index("created_at")
     await db.subscriptions.create_index("user_id", unique=True)
     await db.payment_transactions.create_index("session_id", unique=True)
+    await ensure_company_ids()
 
 
 @app.on_event("shutdown")
@@ -241,6 +290,7 @@ async def register(data: RegisterIn):
         if ref_user and ref_user["id"] != user_id:
             referred_by = ref_user["id"]
 
+    # Step 1: Create user
     doc = {
         "id": user_id,
         "email": email,
@@ -252,7 +302,7 @@ async def register(data: RegisterIn):
     }
     await db.users.insert_one(doc)
 
-    # Initialize empty company profile
+    # Step 2: Initialize empty company profile
     await db.companies.update_one(
         {"user_id": user_id},
         {"$setOnInsert": {
@@ -266,6 +316,18 @@ async def register(data: RegisterIn):
         }},
         upsert=True,
     )
+
+    # Step 3: Get or create company.id
+    company_id = await get_company_id(user_id)
+
+    # Step 4: Update user with company_id and role
+    if company_id:
+        await db.users.update_one(
+            {"id": user_id},
+            {"$set": {"company_id": company_id, "role": "admin"}},
+        )
+        doc["company_id"] = company_id
+        doc["role"] = "admin"
 
     # Grant 7-day Pro trial automatically
     trial_until = now + timedelta(days=TRIAL_DAYS)
@@ -315,6 +377,7 @@ async def get_company(user=Depends(get_current_user)):
             "address": "",
             "logo_base64": "",
         }
+    await get_company_id(user["id"])
     return doc
 
 
@@ -325,6 +388,7 @@ async def update_company(data: CompanyIn, user=Depends(get_current_user)):
     await db.companies.update_one(
         {"user_id": user["id"]}, {"$set": payload}, upsert=True
     )
+    await get_company_id(user["id"])
     doc = await db.companies.find_one({"user_id": user["id"]}, {"_id": 0})
     return doc
 
