@@ -220,6 +220,26 @@ class Product(BaseModel):
     price: float
 
 
+class CatalogProductIn(BaseModel):
+    code: str
+    name: str
+    description: Optional[str] = ""
+    price: float
+    unit: str = "UN"
+
+
+class CatalogProductOut(BaseModel):
+    id: str
+    company_id: str
+    code: str
+    name: str
+    description: str
+    price: float
+    unit: str
+    active: bool
+    created_at: str
+
+
 ProposalStatus = Literal["aberto", "perdido", "realizado"]
 
 
@@ -265,6 +285,12 @@ async def on_startup():
     await db.proposals.create_index("created_at")
     await db.subscriptions.create_index("user_id", unique=True)
     await db.payment_transactions.create_index("session_id", unique=True)
+    await db.products.create_index("company_id")
+
+    await db.products.create_index(
+        [("company_id", 1), ("code", 1)],
+        unique=True
+    )
     await ensure_company_ids()
 
 
@@ -391,6 +417,59 @@ async def update_company(data: CompanyIn, user=Depends(get_current_user)):
     await get_company_id(user["id"])
     doc = await db.companies.find_one({"user_id": user["id"]}, {"_id": 0})
     return doc
+    
+# ---------- Products Catalog ----------
+
+@api_router.get("/products")
+async def list_products(user=Depends(get_current_user)):
+    company_id = user.get("company_id")
+
+    if not company_id:
+        return []
+
+    items = await db.products.find(
+        {
+            "company_id": company_id,
+            "active": True,
+        },
+        {"_id": 0},
+    ).sort("name", 1).to_list(5000)
+
+    return items
+
+
+@api_router.post("/products")
+async def create_product(
+    data: CatalogProductIn,
+    user=Depends(get_current_user),
+):
+    company_id = user.get("company_id")
+
+    if not company_id:
+        raise HTTPException(
+            status_code=400,
+            detail="Empresa não vinculada"
+        )
+
+    doc = {
+        "id": str(uuid.uuid4()),
+        "company_id": company_id,
+        "code": data.code.strip().upper(),
+        "name": data.name.strip(),
+        "description": data.description.strip(),
+        "price": float(data.price),
+        "unit": data.unit.strip().upper(),
+        "active": True,
+        "created_at": datetime.now(
+            timezone.utc
+        ).isoformat(),
+    }
+
+    await db.products.insert_one(doc)
+
+    doc.pop("_id", None)
+
+    return doc    
 
 
 # ---------- Proposals ----------
