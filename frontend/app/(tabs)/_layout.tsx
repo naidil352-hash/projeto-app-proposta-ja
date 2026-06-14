@@ -17,6 +17,7 @@ const NAV_ITEMS = [
   { name: "index", label: "Início" },
   { name: "proposals", label: "Propostas" },
   { name: "new", label: "Nova" },
+  { name: "products", label: "Produtos" },
   { name: "clients", label: "Clientes" },
   { name: "profile", label: "Empresa" },
 ];
@@ -101,7 +102,19 @@ export default function TabsLayout() {
             ),
           }}
         />
-
+		<Tabs.Screen
+		  name="products"
+		  options={{
+			title: "Produtos",
+			tabBarIcon: ({ color, size }) => (
+			  <Ionicons
+				name="cube-outline"
+			size={size}
+			color={color}
+			/>
+		  ),
+		}}
+		/>
         <Tabs.Screen
           name="clients"
           options={{
