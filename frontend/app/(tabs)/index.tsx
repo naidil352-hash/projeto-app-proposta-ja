@@ -41,6 +41,13 @@ type Stats = {
   month_count?: number;
   month_quota?: number | null;
   pro_until?: string | null;
+  ticket_average?: number;
+  total_revenue?: number;
+  clients_count?: number;
+  clients_active?: number;
+  clients_lost?: number;
+  negotiation_count?: number;
+  conversion_rate?: number;
 };
 
 export default function Dashboard() {
@@ -167,62 +174,114 @@ export default function Dashboard() {
           testID="card-open"
           icon="time-outline"
           label="Abertos"
-          value={String(
-            stats?.open_count ??
-              0
-          )}
-          sub={formatCurrency(
-            stats?.open_value ||
-              0
-          )}
-          accent={
-            theme.colors
-              .statusOpenText
-          }
+          value={String(stats?.open_count ?? 0)}
+          sub={formatCurrency(stats?.open_value || 0)}
+          accent={theme.colors.statusOpenText}
         />
 
         <MetricCard
           testID="card-won"
           icon="checkmark-circle-outline"
           label="Realizados"
-          value={String(
-            stats?.won_count ??
-              0
-          )}
+          value={String(stats?.won_count ?? 0)}
           sub="propostas"
-          accent={
-            theme.colors.primary
-          }
+          accent={theme.colors.primary}
         />
 
         <MetricCard
           testID="card-lost"
           icon="close-circle-outline"
           label="Perdidos"
-          value={String(
-            stats?.lost_count ??
-              0
-          )}
+          value={String(stats?.lost_count ?? 0)}
           sub="total"
-          accent={
-            theme.colors
-              .statusLostText
-          }
+          accent={theme.colors.statusLostText}
         />
 
         <MetricCard
           testID="card-followup"
           icon="alert-circle-outline"
           label="Follow-up"
-          value={String(
-            stats?.stale_count ??
-              0
-          )}
+          value={String(stats?.stale_count ?? 0)}
           sub="pendentes"
-          accent={
-            theme.colors.warn
-          }
+          accent={theme.colors.warn}
         />
+      </View>
+
+      <Text style={s.sectionTitle}>Inteligência Comercial</Text>
+
+      <View style={s.kpiRow}>
+        <MetricCard
+          testID="card-revenue"
+          icon="cash-outline"
+          label="Receita Total"
+          value={formatCurrency(stats?.total_revenue || 0)}
+          sub="aprovado"
+          accent={theme.colors.success}
+        />
+        <MetricCard
+          testID="card-ticket"
+          icon="calculator-outline"
+          label="Ticket Médio"
+          value={formatCurrency(stats?.ticket_average || 0)}
+          sub="por proposta"
+          accent={theme.colors.accent}
+        />
+        <MetricCard
+          testID="card-conversion"
+          icon="trending-up-outline"
+          label="Conversão"
+          value={`${stats?.conversion_rate ?? 0}%`}
+          sub="taxa de fechamento"
+          accent="#6D28D9"
+        />
+        <MetricCard
+          testID="card-active-clients"
+          icon="people-outline"
+          label="Clientes Ativos"
+          value={String(stats?.clients_active ?? 0)}
+          sub="últimos 90 dias"
+          accent={theme.colors.primary}
+        />
+      </View>
+
+      <View style={s.kpiRow}>
+        <MetricCard
+          testID="card-negotiation"
+          icon="chatbubbles-outline"
+          label="Em Negociação"
+          value={String(stats?.negotiation_count ?? 0)}
+          sub="propostas"
+          accent={theme.colors.warn}
+        />
+        <MetricCard
+          testID="card-inactive-clients"
+          icon="people-outline"
+          label="Clientes Inativos"
+          value={String(stats?.clients_lost ?? 0)}
+          sub="há 180+ dias"
+          accent={theme.colors.danger}
+        />
+        <View style={{ flex: 1, minWidth: 200 }} />
+        <View style={{ flex: 1, minWidth: 200 }} />
+      </View>
+
+      <View style={s.analyticsRow}>
+        <TouchableOpacity
+          style={s.analyticsBtn}
+          onPress={() => router.push("/analytics/products")}
+          testID="btn-ranking-products"
+        >
+          <Ionicons name="bar-chart-outline" size={16} color="#fff" />
+          <Text style={s.analyticsBtnText}>Ranking de Produtos</Text>
+        </TouchableOpacity>
+        <TouchableOpacity
+          style={s.analyticsBtn}
+          onPress={() => router.push("/analytics/sellers")}
+          testID="btn-ranking-sellers"
+        >
+          <Ionicons name="people-circle-outline" size={16} color="#fff" />
+          <Text style={s.analyticsBtnText}>Ranking de Vendedores</Text>
+        </TouchableOpacity>
       </View>
 
       <View style={s.desktopMainRow}>
@@ -670,34 +729,98 @@ export default function Dashboard() {
               testID="card-open"
               icon="time-outline"
               label="Abertos"
-              value={String(
-                stats?.open_count ??
-                  0
-              )}
-              sub={formatCurrency(
-                stats?.open_value ||
-                  0
-              )}
-              accent={
-                theme.colors
-                  .statusOpenText
-              }
+              value={String(stats?.open_count ?? 0)}
+              sub={formatCurrency(stats?.open_value || 0)}
+              accent={theme.colors.statusOpenText}
             />
 
             <MetricCard
               testID="card-lost"
               icon="close-circle-outline"
               label="Perdidos"
-              value={String(
-                stats?.lost_count ??
-                  0
-              )}
+              value={String(stats?.lost_count ?? 0)}
               sub="total"
-              accent={
-                theme.colors
-                  .statusLostText
-              }
+              accent={theme.colors.statusLostText}
             />
+          </View>
+
+          <Text style={s.sectionTitle}>Inteligência Comercial</Text>
+
+          <View style={s.gridRow}>
+            <MetricCard
+              testID="card-revenue"
+              icon="cash-outline"
+              label="Receita Total"
+              value={formatCurrency(stats?.total_revenue || 0)}
+              sub="aprovado"
+              accent={theme.colors.success}
+            />
+            <MetricCard
+              testID="card-ticket"
+              icon="calculator-outline"
+              label="Ticket Médio"
+              value={formatCurrency(stats?.ticket_average || 0)}
+              sub="por proposta"
+              accent={theme.colors.accent}
+            />
+          </View>
+
+          <View style={s.gridRow}>
+            <MetricCard
+              testID="card-conversion"
+              icon="trending-up-outline"
+              label="Conversão"
+              value={`${stats?.conversion_rate ?? 0}%`}
+              sub="taxa de fechamento"
+              accent="#6D28D9"
+            />
+            <MetricCard
+              testID="card-active-clients"
+              icon="people-outline"
+              label="Clientes Ativos"
+              value={String(stats?.clients_active ?? 0)}
+              sub="últimos 90 dias"
+              accent={theme.colors.primary}
+            />
+          </View>
+
+          <View style={s.gridRow}>
+            <MetricCard
+              testID="card-negotiation"
+              icon="chatbubbles-outline"
+              label="Em Negociação"
+              value={String(stats?.negotiation_count ?? 0)}
+              sub="propostas"
+              accent={theme.colors.warn}
+            />
+            <MetricCard
+              testID="card-inactive-clients"
+              icon="people-outline"
+              label="Clientes Inativos"
+              value={String(stats?.clients_lost ?? 0)}
+              sub="há 180+ dias"
+              accent={theme.colors.danger}
+            />
+          </View>
+
+          <View style={s.analyticsRow}>
+            <TouchableOpacity
+              style={s.analyticsBtn}
+              onPress={() => router.push("/analytics/products")}
+              testID="btn-ranking-products"
+            >
+              <Ionicons name="bar-chart-outline" size={16} color="#fff" />
+              <Text style={s.analyticsBtnText}>Ranking de Produtos</Text>
+            </TouchableOpacity>
+            
+            <TouchableOpacity
+              style={s.analyticsBtn}
+              onPress={() => router.push("/analytics/sellers")}
+              testID="btn-ranking-sellers"
+            >
+              <Ionicons name="people-circle-outline" size={16} color="#fff" />
+              <Text style={s.analyticsBtnText}>Ranking de Vendedores</Text>
+            </TouchableOpacity>
           </View>
 
           <TouchableOpacity
@@ -1266,5 +1389,43 @@ const s = StyleSheet.create({
     color: "#fff",
 
     fontWeight: "700",
+  },
+
+  sectionTitle: {
+    fontSize: 18,
+    fontWeight: "800",
+    color: theme.colors.text,
+    marginTop: 16,
+    marginBottom: 4,
+  },
+
+  analyticsRow: {
+    flexDirection: "row",
+    gap: 12,
+    marginTop: 8,
+    marginBottom: 8,
+  },
+
+  analyticsBtn: {
+    flex: 1,
+    height: 48,
+    borderRadius: 12,
+    backgroundColor: theme.colors.primary,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+  },
+
+  analyticsBtnText: {
+    color: "#fff",
+    fontSize: 13,
+    fontWeight: "700",
+  },
+
+  gridRow: {
+    flexDirection: "row",
+    gap: 12,
+    width: "100%",
   },
 });

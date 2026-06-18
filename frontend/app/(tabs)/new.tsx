@@ -38,6 +38,7 @@ type Product = {
   code?: string;
   name: string;
   description?: string;
+  unit?: string;
   quantity: string;
   price: string;
 };
@@ -82,15 +83,18 @@ export default function NewProposal() {
   const [validity, setValidity] = useState("15");
   const [images, setImages] = useState<string[]>([]);
   
-  const [products, setProducts] = useState<Product[]>([
-  {
-    id: crypto.randomUUID(),
-    name: "",
-    quantity: "",
-    price: "",
-    description: "",
-  },
-]);
+  const [products, setProducts] = useState<Product[]>([]);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [selectedCatalogProduct, setSelectedCatalogProduct] = useState<CatalogProduct | null>(null);
+  const [quantityInput, setQuantityInput] = useState("1");
+  const [showDropdown, setShowDropdown] = useState(false);
+
+  const [itemType, setItemType] = useState<"catalog" | "manual">("catalog");
+  const [manualName, setManualName] = useState("");
+  const [manualDesc, setManualDesc] = useState("");
+  const [manualUnit, setManualUnit] = useState("UN");
+  const [manualPrice, setManualPrice] = useState("");
+  const [manualQty, setManualQty] = useState("1");
 
   const [catalogProducts, setCatalogProducts] = useState<CatalogProduct[]>([]);
   const [loadingCatalog, setLoadingCatalog] = useState(false);
@@ -102,7 +106,7 @@ export default function NewProposal() {
   // Controla qual item está com o dropdown ativo focado para evitar sobreposição visual
   const [focusedIndex, setFocusedIndex] = useState<number | null>(null);
 
-  const reset = () => {
+    const reset = () => {
     setClientName("");
     setDoc("");
     setPhone("");
@@ -112,16 +116,18 @@ export default function NewProposal() {
     setPaymentTerms("");
     setValidity("15");
     setImages([]);
-    setProducts([
-	  {
-		id: crypto.randomUUID(),
-		name: "",
-		quantity: "",
-		price: "",
-		description: "",
-	  },
-	]);
-};
+    setProducts([]);
+    setSearchQuery("");
+    setSelectedCatalogProduct(null);
+    setQuantityInput("1");
+    setShowDropdown(false);
+    setItemType("catalog");
+    setManualName("");
+    setManualDesc("");
+    setManualUnit("UN");
+    setManualPrice("");
+    setManualQty("1");
+  };
   useEffect(() => {
     if (!editId) {
       reset();
@@ -143,18 +149,19 @@ export default function NewProposal() {
         setValidity(String(data.validity_days || 15));
         setImages(Array.isArray(data.images) ? data.images : []);
 
-        if (data.products && data.products.length) {
+                if (data.products && data.products.length) {
           setProducts(
-			data.products.map((p: any) => ({
-			  id: crypto.randomUUID(),
-			  product_id: p.product_id || undefined,
-			  code: p.code || undefined,
-			  name: p.name || "",
-			  description: p.description || "",
-			  quantity: String(p.quantity || ""),
-			  price: formatCurrencyFromBackend(p.price || ""),
-			}))
-		  );
+            data.products.map((p: any) => ({
+              id: crypto.randomUUID(),
+              product_id: p.product_id || undefined,
+              code: p.code || undefined,
+              name: p.name || "",
+              description: p.description || "",
+              unit: p.unit || "UN",
+              quantity: String(p.quantity || ""),
+              price: formatCurrencyFromBackend(p.unit_price || p.price || 0),
+            }))
+          );
         }
       } catch (e) {
         Alert.alert("Erro", "Não foi possí­vel carregar proposta");
@@ -182,53 +189,272 @@ export default function NewProposal() {
     loadCatalog();
   }, []);
 
-	const addProduct = () => {
-  setProducts((prev) => [
-    ...prev,
-    {
-      id: crypto.randomUUID(),
-      name: "",
-      quantity: "",
-      price: "",
-      description: "",
-    },
-  ]);
-};
-
-  const removeProduct = (i: number) => {
-    if (products.length === 1) return;
+	  const removeProduct = (i: number) => {
     setProducts((prev) => prev.filter((_, idx) => idx !== i));
-    if (focusedIndex === i) setFocusedIndex(null);
   };
 
-  const updateProduct = (i: number, key: keyof Product, value: string) => {
-  console.log("UPDATE", i, key, value);
+  const handleAddItem = () => {
+    if (itemType === "catalog") {
+      if (!selectedCatalogProduct) {
+        Alert.alert("Erro", "Selecione um produto do catálogo primeiro.");
+        return;
+      }
+      const qty = parseNumber(quantityInput);
+      if (qty <= 0) {
+        Alert.alert("Erro", "A quantidade deve ser maior que zero.");
+        return;
+      }
 
-  setProducts((prev) =>
-    prev.map((p, idx) =>
-      idx === i
-        ? { ...p, [key]: value }
-        : p
-    )
-  );
-};
+      setProducts((prev) => {
+        const existingIdx = prev.findIndex((p) => p.product_id === selectedCatalogProduct.id);
+        if (existingIdx >= 0) {
+          return prev.map((p, idx) =>
+            idx === existingIdx
+              ? {
+                  ...p,
+                  quantity: String(parseNumber(p.quantity) + qty),
+                }
+              : p
+          );
+        }
+        return [
+          ...prev,
+          {
+            id: crypto.randomUUID(),
+            product_id: selectedCatalogProduct.id,
+            code: selectedCatalogProduct.code,
+            name: selectedCatalogProduct.name,
+            description: selectedCatalogProduct.description,
+            unit: selectedCatalogProduct.unit || "UN",
+            quantity: String(qty),
+            price: formatCurrencyFromBackend(selectedCatalogProduct.price),
+          },
+        ];
+      });
 
-  const selectCatalogProduct = (itemIndex: number, product: CatalogProduct) => {
-    setProducts((prev) =>
-      prev.map((p, idx) =>
-        idx === itemIndex
-          ? {
-              ...p,
-              product_id: product.id,
-              code: product.code,
-              name: product.name,
-              description: product.description,
-              price: formatCurrencyFromBackend(product.price),
-            }
-          : p
-      )
+      setSelectedCatalogProduct(null);
+      setSearchQuery("");
+      setQuantityInput("1");
+    } else {
+      if (!manualName.trim()) {
+        Alert.alert("Erro", "O nome do item é obrigatório.");
+        return;
+      }
+      const qty = parseNumber(manualQty);
+      if (qty <= 0) {
+        Alert.alert("Erro", "A quantidade deve ser maior que zero.");
+        return;
+      }
+      const parsedPrice = parseCurrency(manualPrice);
+      if (parsedPrice < 0) {
+        Alert.alert("Erro", "O preço unitário deve ser maior ou igual a zero.");
+        return;
+      }
+
+      setProducts((prev) => [
+        ...prev,
+        {
+          id: crypto.randomUUID(),
+          name: manualName.trim(),
+          description: manualDesc.trim(),
+          unit: manualUnit.trim() || "UN",
+          quantity: String(qty),
+          price: formatCurrencyFromBackend(parsedPrice),
+        },
+      ]);
+
+      setManualName("");
+      setManualDesc("");
+      setManualUnit("UN");
+      setManualPrice("");
+      setManualQty("1");
+    }
+  };
+
+  const renderItemsSection = () => {
+    const search = searchQuery.toLowerCase().trim();
+    const filteredCatalog = !search
+      ? catalogProducts
+      : catalogProducts.filter((cp) => {
+          const cpCode = cp.code.toLowerCase();
+          const cpName = cp.name.toLowerCase();
+          return cpCode.includes(search) || cpName.includes(search);
+        });
+
+    return (
+      <View style={{ gap: 12 }}>
+        {/* Selector Tabs */}
+        <View style={{ flexDirection: "row", gap: 8 }}>
+          <TouchableOpacity
+            style={[
+              s.tabButton,
+              itemType === "catalog" && s.tabButtonActive
+            ]}
+            onPress={() => setItemType("catalog")}
+          >
+            <Text style={[s.tabButtonText, itemType === "catalog" && s.tabButtonTextActive]}>
+              + Produto do Catálogo
+            </Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={[
+              s.tabButton,
+              itemType === "manual" && s.tabButtonActive
+            ]}
+            onPress={() => setItemType("manual")}
+          >
+            <Text style={[s.tabButtonText, itemType === "manual" && s.tabButtonTextActive]}>
+              + Item Avulso
+            </Text>
+          </TouchableOpacity>
+        </View>
+
+        <View style={s.selectorBox}>
+          {itemType === "catalog" ? (
+            <>
+              <View style={{ zIndex: 999 }}>
+                <Input
+                  label="Buscar Produto no Catálogo"
+                  value={searchQuery}
+                  onChangeText={(v: string) => {
+                    setSearchQuery(v);
+                    setShowDropdown(true);
+                  }}
+                  onFocus={() => setShowDropdown(true)}
+                  placeholder="Nome ou código do produto..."
+                />
+                {showDropdown && filteredCatalog.length > 0 && (
+                  <View style={s.catalogList}>
+                    <ScrollView keyboardShouldPersistTaps="handled" style={{ maxHeight: 200 }}>
+                      {filteredCatalog.slice(0, 10).map((cp) => (
+                        <TouchableOpacity
+                          key={cp.id}
+                          style={s.catalogItem}
+                          onPress={() => {
+                            setSelectedCatalogProduct(cp);
+                            setSearchQuery(cp.code + " - " + cp.name);
+                            setShowDropdown(false);
+                          }}
+                        >
+                          <Text style={s.catalogItemText}>
+                            <Text style={{ fontWeight: "bold" }}>{cp.code}</Text> - {cp.name} ({formatCurrency(cp.price)})
+                          </Text>
+                        </TouchableOpacity>
+                      ))}
+                    </ScrollView>
+                  </View>
+                )}
+              </View>
+
+              {selectedCatalogProduct && (
+                <View style={s.selectedProductInfo}>
+                  <Text style={s.selectedProductText}>
+                    Selecionado: {selectedCatalogProduct.code} - {selectedCatalogProduct.name} ({formatCurrency(selectedCatalogProduct.price)})
+                  </Text>
+                </View>
+              )}
+
+              <View style={{ flexDirection: "row", gap: 8, alignItems: "flex-end", marginTop: 4 }}>
+                <View style={{ flex: 1 }}>
+                  <Input
+                    label="Qtd"
+                    value={quantityInput}
+                    onChangeText={(v: string) => setQuantityInput(v.replace(/[^0-9,.]/g, ""))}
+                    keyboardType="numeric"
+                    placeholder="1"
+                  />
+                </View>
+                <TouchableOpacity style={s.addButton} onPress={handleAddItem}>
+                  <Text style={s.addButtonText}>Adicionar</Text>
+                </TouchableOpacity>
+              </View>
+            </>
+          ) : (
+            <>
+              <Input
+                label="Nome *"
+                value={manualName}
+                onChangeText={setManualName}
+                placeholder="Ex: Serpentina FCU 12TR"
+              />
+              <Input
+                label="Descrição"
+                value={manualDesc}
+                onChangeText={setManualDesc}
+                placeholder="Ex: 8 filas tubo 3/8"
+              />
+              <View style={{ flexDirection: "row", gap: 8 }}>
+                <View style={{ flex: 1 }}>
+                  <Input
+                    label="Unidade"
+                    value={manualUnit}
+                    onChangeText={setManualUnit}
+                    placeholder="UN"
+                  />
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Input
+                    label="Preço Unitário *"
+                    value={manualPrice}
+                    onChangeText={(v: string) => setManualPrice(maskCurrency(v))}
+                    keyboardType="numeric"
+                    placeholder="0,00"
+                  />
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Input
+                    label="Qtd *"
+                    value={manualQty}
+                    onChangeText={(v: string) => setManualQty(v.replace(/[^0-9,.]/g, ""))}
+                    keyboardType="numeric"
+                    placeholder="1"
+                  />
+                </View>
+              </View>
+              <TouchableOpacity style={[s.addButton, { marginTop: 4 }]} onPress={handleAddItem}>
+                <Text style={s.addButtonText}>Adicionar Item Avulso</Text>
+              </TouchableOpacity>
+            </>
+          )}
+        </View>
+
+        <Text style={s.sectionTitle}>Itens Adicionados</Text>
+        {products.length === 0 ? (
+          <Text style={{ color: theme.colors.textMuted, fontStyle: "italic", marginVertical: 8 }}>
+            Nenhum item adicionado à proposta.
+          </Text>
+        ) : (
+          products.map((p, i) => (
+            <View key={p.id} style={s.addedProductRow}>
+              <View style={{ flex: 1 }}>
+                <Text style={s.addedProductTitle}>
+                  {p.code ? (
+                    <>
+                      <Text style={{ fontWeight: "bold" }}>{p.code}</Text> -{" "}
+                    </>
+                  ) : null}
+                  {p.name}
+                </Text>
+                {p.description ? (
+                  <Text style={s.addedProductDesc}>{p.description}</Text>
+                ) : null}
+                <Text style={s.addedProductSub}>
+                  {p.quantity} Qtd × {formatCurrency(parseCurrency(p.price))} {p.unit ? `(${p.unit})` : ""}
+                </Text>
+              </View>
+              <View style={{ flexDirection: "row", alignItems: "center", gap: 12 }}>
+                <Text style={s.addedProductTotal}>
+                  {formatCurrency((parseNumber(p.quantity) || 0) * (parseCurrency(p.price) || 0))}
+                </Text>
+                <TouchableOpacity onPress={() => removeProduct(i)}>
+                  <Ionicons name="trash-outline" size={20} color={theme.colors.danger} />
+                </TouchableOpacity>
+              </View>
+            </View>
+          ))
+        )}
+      </View>
     );
-    setFocusedIndex(null); // Fecha o dropdown imediatamente após a seleção
   };
 
   const buildUploadForm = async (asset: any) => {
@@ -293,21 +519,22 @@ export default function NewProposal() {
       return;
     }
 
-    const cleanProducts = products
-  .filter((p) =>
-    p.name?.trim() ||
-    p.description?.trim()
-  )
-  .map((p) => ({
-        product_id: p.product_id || undefined,
-        code: p.code || undefined,
-        name: p.name.trim(),
-        description: p.description?.trim() || undefined,
-        quantity: parseNumber(p.quantity),
-        price: parseCurrency(p.price),
-      }));
-	  console.log("STATE PRODUCTS", products);
-	  console.log("PRODUTOS", cleanProducts);
+    const cleanProducts = products.map((p) => {
+      if (p.product_id) {
+        return {
+          product_id: p.product_id,
+          quantity: parseNumber(p.quantity),
+        };
+      } else {
+        return {
+          name: p.name,
+          description: p.description || "",
+          unit: p.unit || "UN",
+          unit_price: parseCurrency(p.price),
+          quantity: parseNumber(p.quantity),
+        };
+      }
+    });
     if (!cleanProducts.length) {
       Alert.alert("Atenção", "Adicione pelo menos 1 produto.");
       return;
@@ -329,14 +556,11 @@ export default function NewProposal() {
         validity_days: parseInt(validity || "15", 10) || 15,
       };
 	  console.log("PAYLOAD", payload);
-      let response;
+            let response;
       if (isEditing && editId) {
         response = await api.put(`/proposals/${editId}`, payload);
       } else {
-	  console.log("ENVIANDO PARA API");
         response = await api.post("/proposals", payload);
-	 response = await api.post("/proposals", payload);
-      console.log("RESPOSTA API", response.data); 
       }
 
       reset();
@@ -406,29 +630,9 @@ export default function NewProposal() {
                   </Section>
                 </View>
 
-                <View style={s.panelCard}>
-                  <Section
-                    title="Itens"
-                    right={
-                      <TouchableOpacity onPress={addProduct}>
-                        <Text style={s.link}>+ Adicionar</Text>
-                      </TouchableOpacity>
-                    }
-                  >
-                    {products.map((p, i) => (
-                      <ProductItem
-                        key={p.id}
-                        p={p}
-                        i={i}
-                        productsLength={products.length}
-                        focusedIndex={focusedIndex}
-                        catalogProducts={catalogProducts}
-                        setFocusedIndex={setFocusedIndex}
-                        removeProduct={removeProduct}
-                        updateProduct={updateProduct}
-                        selectCatalogProduct={selectCatalogProduct}
-                      />
-                    ))}
+                                <View style={s.panelCard}>
+                  <Section title="Itens">
+                    {renderItemsSection()}
                   </Section>
                 </View>
               </View>
@@ -571,28 +775,8 @@ export default function NewProposal() {
                 />
               </Section>
 
-              <Section
-                title="Itens"
-                right={
-                  <TouchableOpacity onPress={addProduct}>
-                    <Text style={s.link}>+ Adicionar</Text>
-                  </TouchableOpacity>
-                }
-              >
-                {products.map((p, i) => (
-                  <ProductItem
-                    key={p.id}
-                    p={p}
-                    i={i}
-                    productsLength={products.length}
-                    focusedIndex={focusedIndex}
-                    catalogProducts={catalogProducts}
-                    setFocusedIndex={setFocusedIndex}
-                    removeProduct={removeProduct}
-                    updateProduct={updateProduct}
-                    selectCatalogProduct={selectCatalogProduct}
-                  />
-                ))}
+                            <Section title="Itens">
+                {renderItemsSection()}
               </Section>
 
               <Section title="Imagens">
@@ -716,104 +900,7 @@ export default function NewProposal() {
   );
 }
 
-const ProductItem = React.memo(function ProductItem({
-  p,
-  i,
-  productsLength,
-  focusedIndex,
-  catalogProducts,
-  setFocusedIndex,
-  removeProduct,
-  updateProduct,
-  selectCatalogProduct,
-}: ProductItemProps) {
-  console.log("RENDER PRODUCT ITEM", p.id);
-  const showDropdown = focusedIndex === i && catalogProducts.length > 0;
 
-  // Filtro aprimorado: busca por codigo ou nome.
-  const search = p.name.toLowerCase().trim();
-
-  const filteredCatalog = !search
-    ? catalogProducts
-    : catalogProducts.filter((cp) => {
-        const cpCode = cp.code.toLowerCase();
-        const cpName = cp.name.toLowerCase();
-
-        return cpCode.includes(search) || cpName.includes(search);
-      });
-
-  return (
-    <View style={s.product}>
-      <View style={s.productHeader}>
-        <Text style={s.productHeaderText}>Item {i + 1}</Text>
-        {productsLength > 1 && (
-          <TouchableOpacity onPress={() => removeProduct(i)}>
-            <Ionicons name="trash-outline" size={18} color={theme.colors.danger} />
-          </TouchableOpacity>
-        )}
-      </View>
-
-      <View style={{ zIndex: 100 - i }}>
-        <Input
-          label="Produto"
-          value={p.name}
-          onFocus={() => setFocusedIndex(i)}
-          onChangeText={(v: string) => updateProduct(i, "name", v)}
-          placeholder="Nome ou código do produto"
-        />
-
-        {showDropdown && filteredCatalog.length > 0 && (
-          <View style={s.catalogList}>
-            {filteredCatalog.slice(0, 10).map((cp) => (
-              <TouchableOpacity
-                key={cp.id}
-                style={s.catalogItem}
-                onPress={() => selectCatalogProduct(i, cp)}
-              >
-                <Text style={s.catalogItemText}>
-                  <Text style={{ fontWeight: "bold" }}>{cp.code}</Text> - {cp.name}
-                </Text>
-              </TouchableOpacity>
-            ))}
-          </View>
-        )}
-      </View>
-
-      <Input
-        label="Descrição"
-        value={p.description || ""}
-        onChangeText={(v: string) => updateProduct(i, "description", v)}
-        placeholder="Descrição técnica (opcional)"
-        multiline
-        customHeight={60}
-      />
-
-      <View style={{ flexDirection: "row", gap: 8 }}>
-        <View style={{ flex: 1 }}>
-          <Input
-            label="Qtd"
-            value={p.quantity}
-            onChangeText={(v: string) =>
-              updateProduct(i, "quantity", v.replace(/[^0-9,.]/g, ""))
-            }
-            keyboardType="numeric"
-            placeholder="0"
-          />
-        </View>
-
-        <View style={{ flex: 1.4 }}>
-          <Input
-            label="Preço un."
-            value={p.price}
-            onChangeText={(v: string) => updateProduct(i, "price", maskCurrency(v))}
-            keyboardType="numeric"
-            placeholder="0,00"
-          />
-        </View>
-      </View>
-    </View>
-  );
-});
 
 function Section({ title, right, children }: any) {
   return (
@@ -954,12 +1041,66 @@ const s = StyleSheet.create({
     fontSize: 16,
     color: theme.colors.text,
   },
-  product: {
-    padding: 14,
+    addedProductRow: {
+    padding: 12,
     backgroundColor: "#F1F5F9",
+    borderRadius: 12,
+    marginBottom: 8,
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+  },
+  addedProductTitle: {
+    fontSize: 15,
+    color: theme.colors.text,
+  },
+  addedProductDesc: {
+    fontSize: 12,
+    color: theme.colors.textMuted,
+    marginTop: 2,
+  },
+  addedProductSub: {
+    fontSize: 13,
+    color: theme.colors.textSec,
+    marginTop: 4,
+  },
+  addedProductTotal: {
+    fontSize: 15,
+    fontWeight: "700",
+    color: theme.colors.text,
+  },
+  selectorBox: {
+    padding: 14,
+    backgroundColor: "#fff",
+    borderWidth: 1,
+    borderColor: theme.colors.border,
     borderRadius: 14,
-    gap: 10,
-    marginBottom: 10,
+    marginBottom: 16,
+    gap: 8,
+  },
+  selectedProductInfo: {
+    padding: 8,
+    backgroundColor: "#E2E8F0",
+    borderRadius: 8,
+    marginTop: 4,
+  },
+  selectedProductText: {
+    fontSize: 13,
+    color: theme.colors.text,
+    fontWeight: "600",
+  },
+  addButton: {
+    height: 52,
+    backgroundColor: theme.colors.primary,
+    borderRadius: 12,
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 16,
+  },
+  addButtonText: {
+    color: "#fff",
+    fontWeight: "700",
+    fontSize: 14,
   },
   productHeader: {
     flexDirection: "row",
@@ -1072,6 +1213,28 @@ const s = StyleSheet.create({
   catalogItemText: {
     color: theme.colors.text,
     fontSize: 14,
+  },
+  tabButton: {
+    flex: 1,
+    height: 40,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#F8FAFC",
+  },
+  tabButtonActive: {
+    backgroundColor: theme.colors.primary,
+    borderColor: theme.colors.primary,
+  },
+  tabButtonText: {
+    color: theme.colors.textSec,
+    fontWeight: "600",
+    fontSize: 12,
+  },
+  tabButtonTextActive: {
+    color: "#fff",
   },
 });
 

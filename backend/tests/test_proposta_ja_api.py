@@ -176,10 +176,10 @@ class TestProposals:
         r = session.patch(f"{API}/proposals/{pid}/status", headers=auth_headers,
                           json={"status": "realizado"}, timeout=30)
         assert r.status_code == 200
-        assert r.json()["status"] == "realizado"
+        assert r.json()["status"] == "aprovado"
         # Verify via GET
         r2 = session.get(f"{API}/proposals/{pid}", headers=auth_headers, timeout=30)
-        assert r2.json()["status"] == "realizado"
+        assert r2.json()["status"] == "aprovado"
 
     def test_status_to_perdido_without_reason_400(self, session, auth_headers, proposal_store):
         pid = proposal_store["p2"]

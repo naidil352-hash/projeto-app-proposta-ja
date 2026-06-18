@@ -20,9 +20,15 @@ type Company = {
 };
 
 type Product = {
+  product_id?: string;
+  code?: string;
   name: string;
+  description?: string;
+  unit?: string;
   quantity: number;
-  price: number;
+  unit_price?: number;
+  price?: number;
+  total?: number;
 };
 
 type Proposal = {
@@ -35,8 +41,10 @@ type Proposal = {
   notes?: string;
   images?: string[];
   status: string;
-  total: number;
+  subtotal?: number;
   discount?: number;
+  grand_total?: number;
+  total: number;
   payment_terms?: string;
   validity_days?: number;
   created_at: string;
@@ -79,34 +87,37 @@ function proposalHtml(
   company: Company
 ): string {
 
-  const subtotal = (
-    proposal.products || []
-  ).reduce(
-    (acc, p) =>
-      acc +
-      (p.quantity || 0) *
-        (p.price || 0),
-    0
-  );
+  const subtotal = proposal.hasOwnProperty("subtotal") && proposal.subtotal !== undefined
+    ? proposal.subtotal
+    : (proposal.products || []).reduce(
+        (acc, p) => acc + (p.quantity || 0) * (p.unit_price || p.price || 0),
+        0
+      );
 
-  const discount =
-    proposal.discount || 0;
+  const discount = proposal.discount || 0;
 
   const rows = (
     proposal.products || []
   )
     .map(
       (
-        p,
-        i
+        p
       ) => `
       <tr>
         <td style="padding:10px;border-bottom:1px solid #E2E8F0;">
-          ${i + 1}
+          ${escape_(p.code || "")}
         </td>
 
         <td style="padding:10px;border-bottom:1px solid #E2E8F0;">
-          ${escape_(p.name)}
+          ${escape_(p.name || "")}
+        </td>
+
+        <td style="padding:10px;border-bottom:1px solid #E2E8F0;font-size:12px;color:#64748B;">
+          ${escape_(p.description || "")}
+        </td>
+
+        <td style="padding:10px;border-bottom:1px solid #E2E8F0;text-align:center;">
+          ${escape_(p.unit || "UN")}
         </td>
 
         <td style="padding:10px;border-bottom:1px solid #E2E8F0;text-align:right;">
@@ -115,14 +126,13 @@ function proposalHtml(
 
         <td style="padding:10px;border-bottom:1px solid #E2E8F0;text-align:right;">
           ${formatCurrency(
-            p.price
+            p.unit_price || p.price || 0
           )}
         </td>
 
         <td style="padding:10px;border-bottom:1px solid #E2E8F0;text-align:right;">
           ${formatCurrency(
-            (p.quantity || 0) *
-              (p.price || 0)
+            p.total || ((p.quantity || 0) * (p.unit_price || p.price || 0))
           )}
         </td>
       </tr>
@@ -416,20 +426,26 @@ function proposalHtml(
 
             <tr>
 
-              <th>#</th>
+              <th>Código</th>
 
               <th>Produto</th>
+
+              <th>Descrição</th>
+
+              <th style="text-align:center;">
+                Unidade
+              </th>
 
               <th style="text-align:right;">
                 Qtd
               </th>
 
               <th style="text-align:right;">
-                Preço
+                Preço Unitário
               </th>
 
               <th style="text-align:right;">
-                Subtotal
+                Total Item
               </th>
 
             </tr>
@@ -478,11 +494,11 @@ function proposalHtml(
 
           <div class="row grand">
 
-            <span>Total</span>
+            <span>Total Geral</span>
 
             <span>
               ${formatCurrency(
-                proposal.total
+                proposal.grand_total !== undefined ? proposal.grand_total : proposal.total
               )}
             </span>
 

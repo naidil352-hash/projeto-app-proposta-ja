@@ -3,6 +3,11 @@ import os
 import uuid
 import pytest
 import requests
+from dotenv import load_dotenv
+from pathlib import Path
+
+ROOT_DIR = Path(__file__).parent.parent
+load_dotenv(ROOT_DIR / ".env", override=True)
 
 BASE_URL = os.environ.get("EXPO_PUBLIC_BACKEND_URL", "https://quick-quote-pro-5.preview.emergentagent.com").rstrip("/")
 API = f"{BASE_URL}/api"
@@ -23,6 +28,16 @@ def _register(session, prefix="test"):
                      json={"name": "QA User", "email": email, "password": password}, timeout=30)
     assert r.status_code == 200, r.text
     data = r.json()
+    
+    # Delete trial subscription so the user is 'free'
+    import asyncio
+    from motor.motor_asyncio import AsyncIOMotorClient
+    client_db = AsyncIOMotorClient(os.environ["MONGO_URL"])
+    db = client_db[os.environ["DB_NAME"]]
+    loop = asyncio.get_event_loop()
+    loop.run_until_complete(db.subscriptions.delete_many({"user_id": data["user"]["id"]}))
+    client_db.close()
+
     return {"token": data["token"], "user": data["user"], "email": email, "password": password,
             "headers": {"Authorization": f"Bearer {data['token']}", "Content-Type": "application/json"}}
 

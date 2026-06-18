@@ -102,15 +102,19 @@ export default function ProposalDetail() {
       try {
         setLoading(true);
 
-        const [prop, comp] =
-          await Promise.all([
-            api.get(
-              `/proposals/${id}`
-            ),
-            api.get("/company"),
-          ]);
+        const [prop, comp] = await Promise.all([
+  api.get(`/proposals/${id}`),
+  api.get("/company"),
+]);
 
-        setP(prop.data);
+console.log(
+  "PROPOSTA API",
+  JSON.stringify(prop.data, null, 2)
+);
+
+setP(prop.data);
+
+		console.log("PROPOSTA COMPLETA", prop.data);
 
         setCompany(comp.data);
       } catch (e) {
@@ -267,6 +271,22 @@ export default function ProposalDetail() {
         setBusy(false);
       }
     };
+
+  const convertManualItem = async (index: number) => {
+    try {
+      setBusy(true);
+      const { data } = await api.post(`/proposals/${id}/items/${index}/convert`);
+      Alert.alert(
+        "Sucesso",
+        `Produto ${data.code} criado com sucesso a partir do item manual!`
+      );
+      await load();
+    } catch (e) {
+      Alert.alert("Erro", formatApiError(e));
+    } finally {
+      setBusy(false);
+    }
+  };
 
   const onDelete = () => {
     Alert.alert(
@@ -440,81 +460,66 @@ export default function ProposalDetail() {
           </Text>
         </View>
 
-        <View style={s.card}>
-          <Text
-            style={
-              s.sectionLabel
-            }
-          >
-            Itens
-          </Text>
-
-          {p.products.map(
-            (
-              pr: any,
-              i: number
-            ) => (
-              <View
-                key={i}
-                style={s.itemRow}
-              >
-                <View
-                  style={{
-                    flex: 1,
-                  }}
-                >
-                  <Text
-                    style={
-                      s.itemName
-                    }
-                  >
-                    {pr.name}
-                  </Text>
-
-                  <Text
-                    style={
-                      s.itemSub
-                    }
-                  >
-                    {pr.quantity} ×{" "}
-                    {formatCurrency(
-                      pr.price
-                    )}
-                  </Text>
-                </View>
-
-                <Text
-                  style={
-                    s.itemTotal
-                  }
-                >
-                  {formatCurrency(
-                    pr.quantity *
-                      pr.price
-                  )}
-                </Text>
+                <View style={s.card}>
+          <Text style={s.sectionLabel}>Itens</Text>
+          
+          <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+            <View style={{ minWidth: 740 }}>
+              <View style={s.tableHeader}>
+                <Text style={[s.tableHeadCell, { width: 60 }]}>Cód</Text>
+                <Text style={[s.tableHeadCell, { width: 140 }]}>Produto</Text>
+                <Text style={[s.tableHeadCell, { width: 160 }]}>Descrição</Text>
+                <Text style={[s.tableHeadCell, { width: 60, textAlign: "center" }]}>Qtd</Text>
+                <Text style={[s.tableHeadCell, { width: 90, textAlign: "right" }]}>Preço Un.</Text>
+                <Text style={[s.tableHeadCell, { width: 90, textAlign: "right" }]}>Total</Text>
+                <Text style={[s.tableHeadCell, { width: 140, textAlign: "center" }]}>Ação</Text>
               </View>
-            )
-          )}
+              
+              {p.products.map((pr: any, i: number) => {
+                const unitPrice = pr.unit_price ?? pr.price ?? 0;
+                const itemTotal = pr.total ?? (pr.quantity * unitPrice);
+                return (
+                  <View key={i} style={s.tableRow}>
+                    <Text style={[s.tableCell, { width: 60 }]}>{pr.code || ""}</Text>
+                    <Text style={[s.tableCell, { width: 140, fontWeight: "600" }]}>{pr.name || ""}</Text>
+                    <Text style={[s.tableCell, { width: 160, fontSize: 12, color: theme.colors.textMuted }]}>{pr.description || "-"}</Text>
+                    <Text style={[s.tableCell, { width: 60, textAlign: "center" }]}>{pr.quantity} {pr.unit || "UN"}</Text>
+                    <Text style={[s.tableCell, { width: 90, textAlign: "right" }]}>{formatCurrency(unitPrice)}</Text>
+                    <Text style={[s.tableCell, { width: 90, textAlign: "right", fontWeight: "700" }]}>{formatCurrency(itemTotal)}</Text>
+                    <View style={{ width: 140, alignItems: "center", justifyContent: "center" }}>
+                      {pr.item_type === "manual" ? (
+                        <TouchableOpacity
+                          style={s.convertBtn}
+                          onPress={() => convertManualItem(i)}
+                          testID={`convert-item-${i}`}
+                        >
+                          <Text style={s.convertBtnText}>Transformar em Produto</Text>
+                        </TouchableOpacity>
+                      ) : (
+                        <Text style={{ fontSize: 12, color: theme.colors.textMuted }}>Catálogo</Text>
+                      )}
+                    </View>
+                  </View>
+                );
+              })}
+            </View>
+          </ScrollView>
 
-          <View style={s.totalRow}>
-            <Text
-              style={
-                s.totalLabel
-              }
-            >
-              Total
-            </Text>
-
-            <Text
-              style={
-                s.totalValue
-              }
-            >
-              {formatCurrency(
-                p.total
-              )}
-            </Text>
+          <View style={s.footerSummary}>
+            <View style={s.summaryRow}>
+              <Text style={s.summaryLabel}>Subtotal</Text>
+              <Text style={s.summaryValue}>{formatCurrency(p.subtotal ?? (p.total + (p.discount ?? 0)))}</Text>
+            </View>
+            {(p.discount || 0) > 0 ? (
+              <View style={s.summaryRow}>
+                <Text style={s.summaryLabel}>Desconto</Text>
+                <Text style={[s.summaryValue, { color: theme.colors.danger }]}>- {formatCurrency(p.discount)}</Text>
+              </View>
+            ) : null}
+            <View style={[s.summaryRow, s.grandTotalRow]}>
+              <Text style={s.grandTotalLabel}>Total Geral</Text>
+              <Text style={s.grandTotalValue}>{formatCurrency(p.grand_total ?? p.total)}</Text>
+            </View>
           </View>
         </View>
 
@@ -555,14 +560,12 @@ export default function ProposalDetail() {
                   i: number
                 ) => (
                   <Image
-                    key={i}
-                    source={{
-                      uri: img,
-                    }}
-                    style={
-                      s.previewImage
-                    }
-                  />
+					key={i}
+					source={{ uri: img }}
+					style={s.previewImage}
+					resizeMode="contain"
+					fadeDuration={0}
+				  />
                 )
               )}
             </ScrollView>
@@ -681,113 +684,69 @@ export default function ProposalDetail() {
           />
         </View>
 
-        {p.status ===
-          "aberto" && (
+        {["aberto", "qualificado", "negociacao"].includes(p.status) && (
           <>
-            <Text
-              style={
-                s.sectionLabelBig
-              }
-            >
-              Atualizar status
-            </Text>
-
+            <Text style={s.sectionLabelBig}>Atualizar status</Text>
             <View style={s.grid}>
-              <TouchableOpacity
-                style={[
-                  s.statBtn,
-                  {
-                    backgroundColor:
-                      theme.colors
-                        .statusWonText,
-                  },
-                ]}
-                onPress={() =>
-                  changeStatus(
-                    "realizado"
-                  )
-                }
-                testID="status-won"
-                disabled={busy}
-              >
-                <Ionicons
-                  name="checkmark-circle"
-                  size={20}
-                  color="#fff"
-                />
+              {p.status === "aberto" && (
+                <>
+                  <TouchableOpacity
+                    style={[s.statBtn, { backgroundColor: "#6D28D9" }]}
+                    onPress={() => changeStatus("qualificado")}
+                    testID="status-qualificar"
+                    disabled={busy}
+                  >
+                    <Ionicons name="funnel-outline" size={20} color="#fff" />
+                    <Text style={s.statText}>Qualificar</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={[s.statBtn, { backgroundColor: "#B45309" }]}
+                    onPress={() => changeStatus("negociacao")}
+                    testID="status-negociacao"
+                    disabled={busy}
+                  >
+                    <Ionicons name="chatbubbles-outline" size={20} color="#fff" />
+                    <Text style={s.statText}>Negociação</Text>
+                  </TouchableOpacity>
+                </>
+              )}
 
-                <Text
-                  style={
-                    s.statText
-                  }
+              {p.status === "qualificado" && (
+                <TouchableOpacity
+                  style={[s.statBtn, { backgroundColor: "#B45309", minWidth: "100%" }]}
+                  onPress={() => changeStatus("negociacao")}
+                  testID="status-negociacao"
+                  disabled={busy}
                 >
-                  Realizado
-                </Text>
-              </TouchableOpacity>
+                  <Ionicons name="chatbubbles-outline" size={20} color="#fff" />
+                  <Text style={s.statText}>Iniciar Negociação</Text>
+                </TouchableOpacity>
+              )}
 
-              <TouchableOpacity
-                style={[
-                  s.statBtn,
-                  {
-                    backgroundColor:
-                      theme.colors
-                        .statusLostText,
-                  },
-                ]}
-                onPress={() =>
-                  setLostModal(
-                    true
-                  )
-                }
-                testID="status-lost"
-                disabled={busy}
-              >
-                <Ionicons
-                  name="close-circle"
-                  size={20}
-                  color="#fff"
-                />
-
-                <Text
-                  style={
-                    s.statText
-                  }
-                >
-                  Perdido
-                </Text>
-              </TouchableOpacity>
+              {p.status === "negociacao" && (
+                <>
+                  <TouchableOpacity
+                    style={[s.statBtn, { backgroundColor: theme.colors.statusWonText }]}
+                    onPress={() => changeStatus("aprovado")}
+                    testID="status-won"
+                    disabled={busy}
+                  >
+                    <Ionicons name="checkmark-circle" size={20} color="#fff" />
+                    <Text style={s.statText}>Aprovar</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={[s.statBtn, { backgroundColor: theme.colors.statusLostText }]}
+                    onPress={() => setLostModal(true)}
+                    testID="status-lost"
+                    disabled={busy}
+                  >
+                    <Ionicons name="close-circle" size={20} color="#fff" />
+                    <Text style={s.statText}>Perdido</Text>
+                  </TouchableOpacity>
+                </>
+              )}
             </View>
           </>
-        )}
-
-        {p.status !==
-          "aberto" && (
-          <TouchableOpacity
-            style={s.reopenBtn}
-            onPress={() =>
-              changeStatus(
-                "aberto"
-              )
-            }
-            testID="status-reopen"
-            disabled={busy}
-          >
-            <Ionicons
-              name="refresh"
-              size={20}
-              color={
-                theme.colors.text
-              }
-            />
-
-            <Text
-              style={
-                s.reopenText
-              }
-            >
-              Reabrir proposta
-            </Text>
-          </TouchableOpacity>
         )}
       </ScrollView>
 
@@ -1151,11 +1110,82 @@ const s = StyleSheet.create({
     color:
       theme.colors.textSec,
   },
+  
+  itemDescription: {
+  color: "#64748B",
+  fontSize: 13,
+  marginTop: 2,
+  marginBottom: 4,
+},
 
-  itemTotal: {
+    itemTotal: {
     fontWeight: "700",
 
     color: theme.colors.text,
+  },
+
+  tableHeader: {
+    flexDirection: "row",
+    paddingVertical: 8,
+    backgroundColor: "#F1F5F9",
+    borderTopLeftRadius: 8,
+    borderTopRightRadius: 8,
+    paddingHorizontal: 8,
+  },
+  tableHeadCell: {
+    fontSize: 11,
+    fontWeight: "700",
+    color: theme.colors.textSec,
+    textTransform: "uppercase",
+  },
+  tableRow: {
+    flexDirection: "row",
+    paddingVertical: 10,
+    borderBottomWidth: 1,
+    borderBottomColor: theme.colors.border,
+    paddingHorizontal: 8,
+    alignItems: "center",
+  },
+  tableCell: {
+    fontSize: 13,
+    color: theme.colors.text,
+  },
+  footerSummary: {
+    marginTop: 16,
+    paddingTop: 12,
+    borderTopWidth: 1,
+    borderTopColor: theme.colors.border,
+    gap: 6,
+  },
+  summaryRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+  },
+  summaryLabel: {
+    fontSize: 13,
+    color: theme.colors.textSec,
+  },
+  summaryValue: {
+    fontSize: 14,
+    fontWeight: "600",
+    color: theme.colors.text,
+  },
+  grandTotalRow: {
+    marginTop: 6,
+    paddingTop: 6,
+    borderTopWidth: 1,
+    borderTopColor: theme.colors.border,
+  },
+  grandTotalLabel: {
+    fontSize: 15,
+    fontWeight: "700",
+    color: theme.colors.text,
+  },
+  grandTotalValue: {
+    fontSize: 18,
+    fontWeight: "800",
+    color: theme.colors.primary,
   },
 
   totalRow: {
@@ -1309,8 +1339,10 @@ const s = StyleSheet.create({
     width: 220,
     height: 220,
     borderRadius: 16,
-    backgroundColor: "#eee",
-  },
+    backgroundColor: "#fff",
+    borderWidth: 1,
+    borderColor: "#ddd",
+},
 
   modalRoot: {
     flex: 1,
@@ -1404,5 +1436,20 @@ const s = StyleSheet.create({
 
     justifyContent:
       "center",
+  },
+
+  convertBtn: {
+    backgroundColor: "#3B82F6",
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 6,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+
+  convertBtnText: {
+    color: "#fff",
+    fontSize: 10,
+    fontWeight: "700",
   },
 });

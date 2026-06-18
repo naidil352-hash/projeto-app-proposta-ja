@@ -18,6 +18,7 @@ import { theme, formatCurrency, formatDate } from "../../src/theme";
 import { followUpMessage, openWhatsApp } from "../../src/pdf";
 
 type Client = {
+  client_id?: string;
   client_name: string;
   client_document: string;
   client_phone: string;
@@ -81,7 +82,16 @@ export default function Clients() {
         </View>
       )}
       {items.map((c) => (
-        <View key={c.client_document || c.client_name} style={s.card}>
+        <TouchableOpacity
+          key={c.client_document || c.client_name}
+          style={s.card}
+          onPress={() => {
+            if (c.client_id) {
+              router.push(`/clients/${c.client_id}`);
+            }
+          }}
+          testID={`client-item-${c.client_id}`}
+        >
           <View style={s.avatar}>
             <Text style={s.avatarText}>{c.client_name?.[0]?.toUpperCase() || "?"}</Text>
           </View>
@@ -107,7 +117,7 @@ export default function Clients() {
           >
             <Ionicons name="logo-whatsapp" size={22} color="#fff" />
           </TouchableOpacity>
-        </View>
+        </TouchableOpacity>
       ))}
     </ScrollView>
   );
@@ -162,6 +172,14 @@ export default function Clients() {
               <Text style={[s.tableCell, s.colMedium]}>{c.client_phone}</Text>
               <Text style={[s.tableCell, s.colSmall]}>{formatDate(c.last_proposal_at)}</Text>
               <View style={[s.tableCell, s.colActions, s.actionsCell]}>
+                {c.client_id ? (
+                  <TouchableOpacity
+                    style={s.actionTextButton}
+                    onPress={() => router.push(`/clients/${c.client_id}`)}
+                  >
+                    <Text style={s.actionTextButtonLabel}>Histórico</Text>
+                  </TouchableOpacity>
+                ) : null}
                 <TouchableOpacity
                   style={s.actionTextButton}
                   onPress={() =>

@@ -36,8 +36,26 @@ export const statusMeta: Record<string, { label: string; bg: string; text: strin
     text: theme.colors.statusOpenText,
     border: theme.colors.statusOpenBorder,
   },
+  qualificado: {
+    label: "Qualificado",
+    bg: "#F5F3FF",
+    text: "#6D28D9",
+    border: "#DDD6FE",
+  },
+  negociacao: {
+    label: "Negociação",
+    bg: "#FFFBEB",
+    text: "#B45309",
+    border: "#FDE68A",
+  },
+  aprovado: {
+    label: "Aprovado",
+    bg: theme.colors.statusWonBg,
+    text: theme.colors.statusWonText,
+    border: theme.colors.statusWonBorder,
+  },
   realizado: {
-    label: "Realizado",
+    label: "Aprovado",
     bg: theme.colors.statusWonBg,
     text: theme.colors.statusWonText,
     border: theme.colors.statusWonBorder,
