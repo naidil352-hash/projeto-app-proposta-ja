@@ -684,10 +684,10 @@ async def register(data: RegisterIn, request: Request):
     if company_id:
         await db.users.update_one(
             {"id": user_id},
-            {"$set": {"company_id": company_id, "role": "admin"}},
+            {"$set": {"company_id": company_id, "role": "owner"}},
         )
         doc["company_id"] = company_id
-        doc["role"] = "admin"
+        doc["role"] = "owner"
 
     # Grant 7-day Pro trial automatically
     trial_until = now + timedelta(days=TRIAL_DAYS)
