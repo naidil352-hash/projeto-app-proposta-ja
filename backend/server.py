@@ -181,6 +181,12 @@ async def get_current_user(request: Request) -> dict:
     if not user:
         raise HTTPException(status_code=401, detail="Usuário não encontrado")
     
+    # Force founder/lifetime properties to remain active, owner, and undeleted
+    if user.get("founder") or user.get("lifetime"):
+        user["role"] = "owner"
+        user["active"] = True
+        user["deleted"] = False
+        
     # Soft delete / deactivation check
     if "active" not in user:
         user["active"] = True
@@ -231,6 +237,29 @@ async def get_user_plan_state(user_id: str) -> dict:
     user = await db.users.find_one({"id": user_id})
     company_id = user.get("company_id") if user else None
     
+    if user and (user.get("founder") or user.get("lifetime")):
+        now = datetime.now(timezone.utc)
+        month_start = datetime(now.year, now.month, 1, tzinfo=timezone.utc)
+        if company_id:
+            month_count = await db.proposals.count_documents(
+                {"company_id": company_id, "deleted": {"$ne": True}, "created_at": {"$gte": month_start.isoformat()}}
+            )
+        else:
+            month_count = await db.proposals.count_documents(
+                {"user_id": user_id, "deleted": {"$ne": True}, "created_at": {"$gte": month_start.isoformat()}}
+            )
+        return {
+            "plan": "pro",
+            "pro_until": None,
+            "month_count": month_count,
+            "month_quota": None,
+            "is_pro": True,
+            "is_trial": False,
+            "subscription_status": "active",
+            "founder": True,
+            "lifetime": True,
+        }
+    
     # Resolve company_id and owner_id for fallback
     owner_id = user_id
     if company_id:
@@ -280,6 +309,7 @@ async def get_user_plan_state(user_id: str) -> dict:
         "month_quota": None if is_pro else FREE_MONTHLY_QUOTA,
         "is_pro": is_pro,
         "is_trial": is_trial,
+        "subscription_status": "active" if is_pro else "inactive",
     }
 
 
@@ -2039,12 +2069,16 @@ async def subscription_status(session_id: str, request: Request, user=Depends(ge
 
 
 async def _activate_subscription(user_id: str, plan_id: str, session_id: Optional[str] = None):
+    # Founder/Lifetime protection
+    user = await db.users.find_one({"id": user_id})
+    if user and (user.get("founder") or user.get("lifetime")):
+        return
+        
     plan = SUBSCRIPTION_PLANS.get(plan_id)
     if not plan:
         return
         
     # 1. Resolve company_id and owner_id
-    user = await db.users.find_one({"id": user_id})
     company_id = None
     owner_id = user_id
     
@@ -2053,6 +2087,11 @@ async def _activate_subscription(user_id: str, plan_id: str, session_id: Optiona
         company = await db.companies.find_one({"id": company_id})
         if company and company.get("user_id"):
             owner_id = company["user_id"]
+            
+    # Founder/Lifetime protection on resolved owner
+    owner_user = await db.users.find_one({"id": owner_id})
+    if owner_user and (owner_user.get("founder") or owner_user.get("lifetime")):
+        return
             
     # 2. Idempotency check: check if already processed
     existing = None
@@ -2105,6 +2144,11 @@ async def _activate_subscription(user_id: str, plan_id: str, session_id: Optiona
 
 
 async def _add_pro_days(user_id: str, days: int, source: str = "bonus"):
+    # Founder/Lifetime protection
+    user = await db.users.find_one({"id": user_id})
+    if user and (user.get("founder") or user.get("lifetime")):
+        return
+        
     now = datetime.now(timezone.utc)
     existing = await db.subscriptions.find_one({"user_id": user_id}, {"_id": 0})
     base = now
@@ -2351,6 +2395,11 @@ async def update_user(user_id: str, data: UserUpdateIn, user=Depends(require_adm
     if target_role == "owner" and data.role and data.role != "owner":
         raise HTTPException(status_code=400, detail="O cargo do proprietário não pode ser alterado.")
         
+    # Protect founder/lifetime role demotion
+    if target_user.get("founder") or target_user.get("lifetime"):
+        if data.role and data.role != "owner":
+            raise HTTPException(status_code=400, detail="O cargo do fundador deve ser sempre 'owner'.")
+        
     # 4. Hierarchy check for admin editor
     if editor_role == "admin" and data.role == "admin" and target_role != "admin":
         raise HTTPException(status_code=403, detail="Permissão insuficiente: administradores não podem promover usuários a administrador.")
@@ -2418,8 +2467,8 @@ async def delete_user(user_id: str, user=Depends(require_admin)):
         raise HTTPException(status_code=404, detail="Usuário não encontrado")
         
     # 2. Cannot delete owner
-    if target_user.get("role") == "owner":
-        raise HTTPException(status_code=400, detail="O proprietário da empresa não pode ser desativado.")
+    if target_user.get("role") == "owner" or target_user.get("founder") or target_user.get("lifetime"):
+        raise HTTPException(status_code=400, detail="A conta do fundador ou proprietário não pode ser desativada.")
         
     # 3. Cannot delete self
     if user_id == user["id"]:
@@ -2794,6 +2843,9 @@ async def get_backup_info(user=Depends(require_admin)):
 
 @api_router.delete("/account")
 async def delete_account(user=Depends(get_current_user)):
+    if user.get("founder") or user.get("lifetime"):
+        raise HTTPException(status_code=403, detail="A conta do fundador não pode ser excluída.")
+        
     company_id = user.get("company_id")
     role = user.get("role", "owner")
     
