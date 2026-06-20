@@ -1,7 +1,7 @@
 import React, { createContext, useContext, useEffect, useState } from "react";
 import { api, saveToken, clearToken, loadToken, formatApiError } from "./api";
 
-type User = { id: string; email: string; name: string };
+type User = { id: string; email: string; name: string; role: string };
 
 type AuthCtx = {
   user: User | null | undefined;
@@ -25,7 +25,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
       try {
         const { data } = await api.get("/auth/me");
-        setUser({ id: data.id, email: data.email, name: data.name });
+        setUser({ id: data.id, email: data.email, name: data.name, role: data.role });
       } catch (e) {
         console.log("AUTH LOAD ERROR:", e);
         await clearToken();
@@ -43,7 +43,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       }
 
       await saveToken(res.data.token);
-      setUser(res.data.user);
+      const meRes = await api.get("/auth/me");
+      setUser({ id: meRes.data.id, email: meRes.data.email, name: meRes.data.name, role: meRes.data.role });
 
     } catch (e: any) {
       console.log("LOGIN ERROR:", e);
@@ -73,7 +74,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       }
 
       await saveToken(res.data.token);
-      setUser(res.data.user);
+      const meRes = await api.get("/auth/me");
+      setUser({ id: meRes.data.id, email: meRes.data.email, name: meRes.data.name, role: meRes.data.role });
 
     } catch (e: any) {
       console.log("REGISTER ERROR:", e);

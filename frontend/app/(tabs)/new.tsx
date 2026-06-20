@@ -52,18 +52,6 @@ type CatalogProduct = {
   unit: string;
 };
 
-type ProductItemProps = {
-  p: Product;
-  i: number;
-  productsLength: number;
-  focusedIndex: number | null;
-  catalogProducts: CatalogProduct[];
-  setFocusedIndex: React.Dispatch<React.SetStateAction<number | null>>;
-  removeProduct: (i: number) => void;
-  updateProduct: (i: number, key: keyof Product, value: string) => void;
-  selectCatalogProduct: (itemIndex: number, product: CatalogProduct) => void;
-};
-
 export default function NewProposal() {
   const router = useRouter();
   const { width } = useWindowDimensions();

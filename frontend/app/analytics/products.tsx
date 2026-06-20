@@ -86,7 +86,7 @@ export default function ProductRanking() {
 
               {items.map((item, index) => (
                 <View key={index} style={s.tableRow}>
-                  <View style={[s.cell, { flex: 2, flexDirection: "row", alignItems: "center", gap: 8 }]}>
+                  <View style={{ flex: 2, flexDirection: "row", alignItems: "center", gap: 8 }}>
                     <Text style={s.rankText}>{index + 1}.</Text>
                     <Text style={s.productName} numberOfLines={2}>{item.name}</Text>
                   </View>
