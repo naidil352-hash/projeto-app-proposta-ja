@@ -435,6 +435,11 @@ def normalize_proposal(p: dict) -> dict:
     # Normalize items to have item_type
     if "products" in p:
         p["products"] = normalize_proposal_items(p["products"])
+    # Ensure seller snapshot fields exist
+    p["seller_name"] = p.get("seller_name") or ""
+    p["seller_email"] = p.get("seller_email") or ""
+    p["seller_phone"] = p.get("seller_phone") or ""
+    p["seller_role"] = p.get("seller_role") or ""
     return p
 
 
@@ -1211,33 +1216,49 @@ async def list_proposals(
     page_size: Optional[int] = Query(None, ge=1, le=100),
     scope: Optional[str] = None,
     seller_id: Optional[str] = None,
+    seller_name: Optional[str] = None,
+    search: Optional[str] = None,
     user=Depends(get_current_user),
 ):
     role = user.get("role", "owner")
     if role == "seller":
-        q = {"company_id": user["company_id"], "user_id": user["id"]}
+        permission_filter = {"company_id": user["company_id"], "user_id": user["id"]}
     else:
-        if scope == "meu_time":
-            q = {
+        if scope in ("meu_time", "team"):
+            permission_filter = {
                 "company_id": user["company_id"],
                 "user_id": {"$ne": user["id"]}
             }
         elif scope == "vendedor" and seller_id:
-            q = {
+            permission_filter = {
                 "company_id": user["company_id"],
                 "user_id": seller_id
             }
         else:
-            q = {"$or": [{"company_id": user["company_id"]}, {"user_id": user["id"]}]}
+            permission_filter = {"$or": [{"company_id": user["company_id"]}, {"user_id": user["id"]}]}
             
-    q["deleted"] = {"$ne": True}
+    filters = {"deleted": {"$ne": True}}
         
     if status:
         if status in ("aberto", "qualificado", "negociacao", "aprovado", "perdido", "realizado"):
             if status in ("aprovado", "realizado"):
-                q["status"] = {"$in": ["aprovado", "realizado"]}
+                filters["status"] = {"$in": ["aprovado", "realizado"]}
             else:
-                q["status"] = status
+                filters["status"] = status
+
+    if seller_name:
+        filters["seller_name"] = {"$regex": seller_name, "$options": "i"}
+
+    if search:
+        search_regex = {"$regex": search, "$options": "i"}
+        filters["$or"] = [
+            {"client_name": search_regex},
+            {"client_document": search_regex},
+            {"client_phone": search_regex},
+            {"seller_name": search_regex}
+        ]
+
+    q = {"$and": [permission_filter, filters]}
 
     if page is None and page_size is None:
         # legado
@@ -1921,9 +1942,20 @@ async def get_products_analytics(user=Depends(get_current_user)):
 
 @api_router.get("/analytics/sellers")
 async def get_sellers_analytics(user=Depends(get_current_user)):
-    proposals = await db.proposals.find({
-        "company_id": user["company_id"]
-    }).to_list(10000)
+    role = user.get("role", "owner")
+    if role == "seller":
+        query = {
+            "company_id": user["company_id"],
+            "user_id": user["id"],
+            "deleted": {"$ne": True}
+        }
+    else:
+        query = {
+            "company_id": user["company_id"],
+            "deleted": {"$ne": True}
+        }
+        
+    proposals = await db.proposals.find(query).to_list(10000)
     
     seller_stats = {}
     for p in proposals:
@@ -1955,11 +1987,11 @@ async def get_sellers_analytics(user=Depends(get_current_user)):
             stats["value_sold"] += val
         elif status == "perdido":
             stats["lost_count"] += 1
-        elif status == "aberto":
+        elif status in ("aberto", "qualificado", "negociacao"):
             stats["open_count"] += 1
-        elif status == "negociacao":
-            stats["negotiation_count"] += 1
             stats["value_negotiated"] += val
+            if status == "negociacao":
+                stats["negotiation_count"] += 1
 
     result = []
     for seller, stats in seller_stats.items():
