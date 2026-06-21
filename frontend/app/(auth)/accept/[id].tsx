@@ -9,10 +9,11 @@ import {
   ActivityIndicator,
   Alert,
   useWindowDimensions,
+  Linking,
 } from "react-native";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { api, formatApiError } from "../../../src/api";
-import { theme, formatCurrency, formatDate } from "../../../src/theme";
+import { theme, formatCurrency, formatDate, getRoleLabel } from "../../../src/theme";
 import { Ionicons } from "@expo/vector-icons";
 
 type Proposal = {
@@ -206,9 +207,23 @@ export default function PublicAccept() {
           <View style={s.card}>
             <Text style={s.sectionTitle}>Consultor Comercial</Text>
             <Text style={s.sellerName}>{p.seller_name}</Text>
-            {p.seller_role ? <Text style={s.sellerMeta}>Cargo: {p.seller_role}</Text> : null}
+            {p.seller_role ? <Text style={s.sellerMeta}>Cargo: {getRoleLabel(p.seller_role)}</Text> : null}
             {p.seller_phone ? <Text style={s.sellerMeta}>Telefone: {p.seller_phone}</Text> : null}
             {p.seller_email ? <Text style={s.sellerMeta}>E-mail: {p.seller_email}</Text> : null}
+
+            {p.seller_phone ? (
+              <TouchableOpacity
+                style={s.whatsappBtn}
+                onPress={() => {
+                  const cleanedPhone = p.seller_phone!.replace(/\D/g, "");
+                  Linking.openURL(`https://wa.me/${cleanedPhone}`);
+                }}
+                testID="btn-whatsapp"
+              >
+                <Ionicons name="logo-whatsapp" size={16} color="#fff" />
+                <Text style={s.whatsappBtnText}>Falar no WhatsApp</Text>
+              </TouchableOpacity>
+            ) : null}
           </View>
         ) : null}
 
@@ -362,4 +377,21 @@ const s = StyleSheet.create({
   btnReject: { backgroundColor: "#fff", borderWidth: 1, borderColor: theme.colors.danger },
   btnText: { color: "#fff", fontWeight: "700", fontSize: 14 },
   btnDisabled: { opacity: 0.6 },
+  whatsappBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#25D366",
+    borderRadius: 8,
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    marginTop: 12,
+    gap: 8,
+    alignSelf: "flex-start",
+  },
+  whatsappBtnText: {
+    color: "#fff",
+    fontWeight: "700",
+    fontSize: 13,
+  },
 });

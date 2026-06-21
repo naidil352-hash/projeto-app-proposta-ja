@@ -94,3 +94,10 @@ export function daysSince(iso?: string | null): number {
 export function onlyDigits(s: string): string {
   return (s || "").replace(/\D/g, "");
 }
+
+export function getRoleLabel(role: string): string {
+  if (role === "owner") return "Proprietário";
+  if (role === "admin") return "Administrador";
+  if (role === "seller") return "Consultor Comercial";
+  return role || "";
+}

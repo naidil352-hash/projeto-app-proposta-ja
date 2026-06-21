@@ -8,6 +8,7 @@ import {
   formatCurrency,
   formatDate,
   onlyDigits,
+  getRoleLabel,
 } from "./theme";
 
 type Company = {
@@ -52,6 +53,7 @@ type Proposal = {
   seller_email?: string;
   seller_phone?: string;
   seller_role?: string;
+  seller_signature?: string;
 };
 
 function logoSrc(
@@ -591,11 +593,11 @@ function proposalHtml(
         proposal.seller_name
           ? `
         <div class="section">
-          <h2>Consultor Comercial</h2>
+          <h2>CONSULTOR COMERCIAL</h2>
           <div class="card">
             <div style="font-size:14px;line-height:1.6;color:#334155;">
               <div><strong>Nome:</strong> ${escape_(proposal.seller_name)}</div>
-              ${proposal.seller_role ? `<div><strong>Cargo:</strong> ${escape_(proposal.seller_role)}</div>` : ""}
+              ${proposal.seller_role ? `<div><strong>Cargo:</strong> ${escape_(getRoleLabel(proposal.seller_role))}</div>` : ""}
               ${proposal.seller_phone ? `<div><strong>Telefone:</strong> ${escape_(proposal.seller_phone)}</div>` : ""}
               ${proposal.seller_email ? `<div><strong>E-mail:</strong> ${escape_(proposal.seller_email)}</div>` : ""}
             </div>

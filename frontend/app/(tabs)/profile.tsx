@@ -36,7 +36,7 @@ import {
   formatApiError,
 } from "../../src/api";
 
-import { theme } from "../../src/theme";
+import { theme, getRoleLabel } from "../../src/theme";
 
 import { useAuth } from "../../src/auth";
 
@@ -101,6 +101,8 @@ export default function Profile() {
   const [formEmail, setFormEmail] = useState("");
   const [formPassword, setFormPassword] = useState("");
   const [formRole, setFormRole] = useState<"admin" | "seller">("seller");
+  const [formPhone, setFormPhone] = useState("");
+  const [formWhatsapp, setFormWhatsapp] = useState("");
   const [sendInvite, setSendInvite] = useState(true);
 
   const [reactivateEmail, setReactivateEmail] = useState("");
@@ -129,6 +131,8 @@ export default function Profile() {
     setFormEmail("");
     setFormPassword("");
     setFormRole("seller");
+    setFormPhone("");
+    setFormWhatsapp("");
     setEditingUser(null);
     setSendInvite(true);
   };
@@ -139,6 +143,8 @@ export default function Profile() {
     setFormEmail(u.email);
     setFormPassword("");
     setFormRole(u.role === "admin" ? "admin" : "seller");
+    setFormPhone(u.phone || "");
+    setFormWhatsapp(u.whatsapp || "");
     setSendInvite(false);
     setUserModalVisible(true);
   };
@@ -154,7 +160,9 @@ export default function Profile() {
         name: formName.trim(),
         email: formEmail.trim().toLowerCase(),
         password: formPassword,
-        role: formRole
+        role: formRole,
+        phone: formPhone.trim(),
+        whatsapp: formWhatsapp.trim()
       });
       Alert.alert("Pronto!", "Usuário criado com sucesso.");
       setUserModalVisible(false);
@@ -178,7 +186,9 @@ export default function Profile() {
       const payload: any = {
         name: formName.trim(),
         email: formEmail.trim().toLowerCase(),
-        role: formRole
+        role: formRole,
+        phone: formPhone.trim(),
+        whatsapp: formWhatsapp.trim()
       };
       if (formPassword.trim()) {
         payload.password = formPassword;
@@ -269,10 +279,7 @@ export default function Profile() {
   };
 
   const formatRole = (role: string) => {
-    if (role === "owner") return "Proprietário";
-    if (role === "admin") return "Admin";
-    if (role === "seller") return "Seller";
-    return role;
+    return getRoleLabel(role);
   };
 
   const load = useCallback(
@@ -564,6 +571,8 @@ export default function Profile() {
                 <View style={{ flex: 1 }}>
                   <Text style={s.userCardName}>{u.name}</Text>
                   <Text style={s.userCardEmail}>{u.email}</Text>
+                  {u.phone ? <Text style={s.userCardEmail}>Telefone: {u.phone}</Text> : null}
+                  {u.whatsapp ? <Text style={s.userCardEmail}>WhatsApp: {u.whatsapp}</Text> : null}
                 </View>
                 <View style={[s.badgeCompact, u.active !== false ? s.badgeActive : s.badgeInactive]}>
                   <Text style={[s.badgeCompactText, u.active !== false ? s.badgeActiveText : s.badgeInactiveText]}>
@@ -641,6 +650,32 @@ export default function Profile() {
               </View>
 
               <View style={{ gap: 6 }}>
+                <Text style={s.modalLabel}>Telefone</Text>
+                <TextInput
+                  style={s.modalInput}
+                  placeholder="Ex: (11) 99999-9999"
+                  value={formPhone}
+                  onChangeText={setFormPhone}
+                  keyboardType="phone-pad"
+                  placeholderTextColor={theme.colors.textMuted}
+                  testID="user-form-phone"
+                />
+              </View>
+
+              <View style={{ gap: 6 }}>
+                <Text style={s.modalLabel}>WhatsApp (opcional)</Text>
+                <TextInput
+                  style={s.modalInput}
+                  placeholder="Ex: (11) 99999-9999"
+                  value={formWhatsapp}
+                  onChangeText={setFormWhatsapp}
+                  keyboardType="phone-pad"
+                  placeholderTextColor={theme.colors.textMuted}
+                  testID="user-form-whatsapp"
+                />
+              </View>
+
+              <View style={{ gap: 6 }}>
                 <Text style={s.modalLabel}>{isEditing ? "Nova Senha (opcional)" : "Senha Temporária"}</Text>
                 <TextInput
                   style={s.modalInput}
@@ -662,7 +697,7 @@ export default function Profile() {
                     testID="role-seller"
                   >
                     <Ionicons name="people" size={16} color={formRole === "seller" ? "#fff" : theme.colors.textSec} />
-                    <Text style={[s.roleSelectorText, formRole === "seller" && s.roleSelectorTextActive]}>Seller</Text>
+                    <Text style={[s.roleSelectorText, formRole === "seller" && s.roleSelectorTextActive]}>Consultor Comercial</Text>
                   </TouchableOpacity>
                   <TouchableOpacity
                     style={[s.roleSelectorBtn, formRole === "admin" && s.roleSelectorBtnActive]}
@@ -670,7 +705,7 @@ export default function Profile() {
                     testID="role-admin"
                   >
                     <Ionicons name="shield-half" size={16} color={formRole === "admin" ? "#fff" : theme.colors.textSec} />
-                    <Text style={[s.roleSelectorText, formRole === "admin" && s.roleSelectorTextActive]}>Admin</Text>
+                    <Text style={[s.roleSelectorText, formRole === "admin" && s.roleSelectorTextActive]}>Administrador</Text>
                   </TouchableOpacity>
                 </View>
               </View>

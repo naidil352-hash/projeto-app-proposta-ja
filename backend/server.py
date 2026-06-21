@@ -440,6 +440,7 @@ def normalize_proposal(p: dict) -> dict:
     p["seller_email"] = p.get("seller_email") or ""
     p["seller_phone"] = p.get("seller_phone") or ""
     p["seller_role"] = p.get("seller_role") or ""
+    p["seller_signature"] = p.get("seller_signature") or ""
     # Ensure acceptance fields exist
     p["acceptance_status"] = p.get("acceptance_status") or "pending"
     p["accept_name"] = p.get("accept_name") or ""
@@ -449,6 +450,16 @@ def normalize_proposal(p: dict) -> dict:
     p["accept_ip"] = p.get("accept_ip") or ""
     p["accept_device"] = p.get("accept_device") or ""
     return p
+
+
+def get_role_label(role: str) -> str:
+    if role == "owner":
+        return "Proprietário"
+    elif role == "admin":
+        return "Administrador"
+    elif role == "seller":
+        return "Consultor Comercial"
+    return role or ""
 
 
 # ---------- Models ----------
@@ -1174,10 +1185,11 @@ async def create_proposal(data: ProposalIn, user=Depends(get_current_user)):
         "id": pid,
         "user_id": user["id"],
         "company_id": user["company_id"],
-        "seller_name": user["name"],  # Historical snapshot of seller name
-        "seller_email": user.get("email", ""),
-        "seller_phone": user.get("phone", user.get("telefone", "")),
-        "seller_role": user.get("role", "owner"),
+        "seller_name": user.get("name") or "",  # Historical snapshot of seller name
+        "seller_email": user.get("email") or "",
+        "seller_phone": user.get("phone") or "",
+        "seller_role": user.get("role") or "owner",
+        "seller_signature": user.get("signature_url") or user.get("seller_signature") or "",
         "client_id": client_id,
         "client_name": data.client_name,
         "client_document": data.client_document,
@@ -1543,10 +1555,11 @@ async def duplicate_proposal(pid: str, user=Depends(get_current_user)):
         "id": new_id,
         "user_id": user["id"],
         "company_id": user["company_id"],
-        "seller_name": user["name"],
-        "seller_email": user.get("email", ""),
-        "seller_phone": user.get("phone", user.get("telefone", "")),
-        "seller_role": user.get("role", "owner"),
+        "seller_name": user.get("name") or "",
+        "seller_email": user.get("email") or "",
+        "seller_phone": user.get("phone") or "",
+        "seller_role": user.get("role") or "owner",
+        "seller_signature": user.get("signature_url") or user.get("seller_signature") or "",
         "client_id": client_id,
         "status": "aberto",
         "status_updated_at": now,
@@ -2520,12 +2533,18 @@ class UserCreateIn(BaseModel):
     email: EmailStr
     password: str = Field(min_length=6)
     role: Literal["admin", "seller"]
+    phone: Optional[str] = ""
+    whatsapp: Optional[str] = ""
+    signature_url: Optional[str] = ""
 
 class UserUpdateIn(BaseModel):
     name: Optional[str] = None
     email: Optional[EmailStr] = None
     role: Optional[Literal["admin", "seller"]] = None
     password: Optional[str] = Field(default=None, min_length=6)
+    phone: Optional[str] = None
+    whatsapp: Optional[str] = None
+    signature_url: Optional[str] = None
 
 class UserOut(BaseModel):
     id: str
@@ -2535,6 +2554,9 @@ class UserOut(BaseModel):
     role: str
     active: bool
     created_at: str
+    phone: Optional[str] = ""
+    whatsapp: Optional[str] = ""
+    signature_url: Optional[str] = ""
 
 
 # ---------- User CRUD Endpoints ----------
@@ -2550,7 +2572,10 @@ async def list_users(user=Depends(require_admin)):
             "email": 1,
             "role": 1,
             "active": 1,
-            "created_at": 1
+            "created_at": 1,
+            "phone": 1,
+            "whatsapp": 1,
+            "signature_url": 1
         }
     ).to_list(1000)
     for u in users:
@@ -2560,6 +2585,9 @@ async def list_users(user=Depends(require_admin)):
             u["role"] = "owner"
         if "created_at" not in u:
             u["created_at"] = ""
+        u["phone"] = u.get("phone") or ""
+        u["whatsapp"] = u.get("whatsapp") or ""
+        u["signature_url"] = u.get("signature_url") or ""
     return users
 
 
@@ -2592,7 +2620,10 @@ async def create_user(data: UserCreateIn, user=Depends(require_admin)):
         "deleted": False,
         "verified_email": False,
         "verification_token": str(uuid.uuid4()),
-        "verification_sent_at": now
+        "verification_sent_at": now,
+        "phone": data.phone or "",
+        "whatsapp": data.whatsapp or "",
+        "signature_url": data.signature_url or "",
     }
     await db.users.insert_one(new_user)
     
@@ -2655,6 +2686,12 @@ async def update_user(user_id: str, data: UserUpdateIn, user=Depends(require_adm
         update_data["role"] = data.role
     if data.password:
         update_data["password_hash"] = hash_password(data.password)
+    if data.phone is not None:
+        update_data["phone"] = data.phone
+    if data.whatsapp is not None:
+        update_data["whatsapp"] = data.whatsapp
+    if data.signature_url is not None:
+        update_data["signature_url"] = data.signature_url
         
     if update_data:
         await db.users.update_one({"id": user_id}, {"$set": update_data})
@@ -2669,7 +2706,10 @@ async def update_user(user_id: str, data: UserUpdateIn, user=Depends(require_adm
             "email": 1,
             "role": 1,
             "active": 1,
-            "created_at": 1
+            "created_at": 1,
+            "phone": 1,
+            "whatsapp": 1,
+            "signature_url": 1
         }
     )
     if updated:
@@ -2679,6 +2719,9 @@ async def update_user(user_id: str, data: UserUpdateIn, user=Depends(require_adm
             updated["role"] = "owner"
         if "created_at" not in updated:
             updated["created_at"] = ""
+        updated["phone"] = updated.get("phone") or ""
+        updated["whatsapp"] = updated.get("whatsapp") or ""
+        updated["signature_url"] = updated.get("signature_url") or ""
             
     # Audit log update
     await log_audit(

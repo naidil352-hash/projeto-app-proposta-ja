@@ -31,6 +31,7 @@ import {
   formatCurrency,
   formatDate,
   daysSince,
+  getRoleLabel,
 } from "../../src/theme";
 
 import {
@@ -592,6 +593,16 @@ setP(prop.data);
             {p.shipping_deadline}
           </Text>
         </View>
+
+        {p.seller_name ? (
+          <View style={s.card}>
+            <Text style={s.sectionLabel}>Consultor Comercial</Text>
+            <Text style={s.itemName}>{p.seller_name}</Text>
+            {p.seller_role ? <Text style={s.sub}>Cargo: {getRoleLabel(p.seller_role)}</Text> : null}
+            {p.seller_phone ? <Text style={s.sub}>Telefone: {p.seller_phone}</Text> : null}
+            {p.seller_email ? <Text style={s.sub}>E-mail: {p.seller_email}</Text> : null}
+          </View>
+        ) : null}
 
         {p.images?.length ? (
           <View style={s.card}>
