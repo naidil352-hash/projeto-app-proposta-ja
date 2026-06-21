@@ -19,9 +19,14 @@ type SellerAnalytic = {
   proposal_count: number;
   approved_count: number;
   lost_count: number;
+  open_count?: number;
+  won_count?: number;
+  negotiation_count?: number;
   conversion_rate: number;
   ticket_average: number;
   revenue: number;
+  value_sold?: number;
+  value_negotiated?: number;
 };
 
 export default function SellerRanking() {
@@ -81,14 +86,16 @@ export default function SellerRanking() {
               <Text style={s.cardTitle}>Desempenho Geral de Vendas</Text>
               
               <ScrollView horizontal showsHorizontalScrollIndicator={false}>
-                <View style={{ minWidth: 800 }}>
+                <View style={{ minWidth: 1010 }}>
                   <View style={s.tableHeader}>
                     <Text style={[s.headerCell, { width: 180 }]}>Vendedor</Text>
                     <Text style={[s.headerCell, { width: 90, textAlign: "center" }]}>Propostas</Text>
+                    <Text style={[s.headerCell, { width: 80, textAlign: "center" }]}>Abertas</Text>
                     <Text style={[s.headerCell, { width: 90, textAlign: "center" }]}>Aprovadas</Text>
                     <Text style={[s.headerCell, { width: 90, textAlign: "center" }]}>Perdidas</Text>
                     <Text style={[s.headerCell, { width: 90, textAlign: "center" }]}>Conversão</Text>
                     <Text style={[s.headerCell, { width: 130, textAlign: "right" }]}>Ticket Médio</Text>
+                    <Text style={[s.headerCell, { width: 130, textAlign: "right" }]}>Negociando</Text>
                     <Text style={[s.headerCell, { width: 130, textAlign: "right" }]}>Receita</Text>
                   </View>
 
@@ -99,6 +106,9 @@ export default function SellerRanking() {
                         <Text style={s.sellerName} numberOfLines={2}>{item.seller_name || "Desconhecido"}</Text>
                       </View>
                       <Text style={[s.cell, { width: 90, textAlign: "center" }]}>{item.proposal_count}</Text>
+                      <Text style={[s.cell, { width: 80, textAlign: "center", color: "#f59e0b" }]}>
+                        {item.open_count || 0}
+                      </Text>
                       <Text style={[s.cell, { width: 90, textAlign: "center", fontWeight: "600", color: theme.colors.success }]}>
                         {item.approved_count}
                       </Text>
@@ -111,8 +121,11 @@ export default function SellerRanking() {
                       <Text style={[s.cell, { width: 130, textAlign: "right" }]}>
                         {formatCurrency(item.ticket_average)}
                       </Text>
+                      <Text style={[s.cell, { width: 130, textAlign: "right", color: "#0284c7" }]}>
+                        {formatCurrency(item.value_negotiated || 0)}
+                      </Text>
                       <Text style={[s.cell, { width: 130, textAlign: "right", fontWeight: "700", color: theme.colors.success }]}>
-                        {formatCurrency(item.revenue)}
+                        {formatCurrency(item.value_sold || item.revenue)}
                       </Text>
                     </View>
                   ))}

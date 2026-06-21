@@ -28,6 +28,8 @@ type Proposal = {
   status: string;
   total: number;
   created_at: string;
+  seller_name?: string;
+  user_id?: string;
 };
 
 type Company = { company_name?: string; [k: string]: any };
@@ -52,29 +54,51 @@ export default function Proposals() {
   const [selectMode, setSelectMode] = useState(false);
   const [selected, setSelected] = useState<Set<string>>(new Set());
 
-  const load = useCallback(async (f = filter) => {
+  const [userRole, setUserRole] = useState("seller");
+  const [users, setUsers] = useState<any[]>([]);
+  const [scope, setScope] = useState("todos");
+  const [selectedSellerId, setSelectedSellerId] = useState<string | null>(null);
+
+  const load = useCallback(async (f = filter, sc = scope, sId = selectedSellerId) => {
     try {
       setLoading(true);
-      const qs = f === "all" ? "" : `?status=${f}`;
-      const [prop, comp] = await Promise.all([api.get(`/proposals${qs}`), api.get("/company")]);
+      const params = new URLSearchParams();
+      if (f !== "all") params.append("status", f);
+      if (sc !== "todos") params.append("scope", sc);
+      if (sc === "vendedor" && sId) params.append("seller_id", sId);
+      
+      const qs = params.toString() ? `?${params.toString()}` : "";
+      
+      const [prop, comp, profile] = await Promise.all([
+        api.get(`/proposals${qs}`),
+        api.get("/company"),
+        api.get("/auth/me")
+      ]);
+      
       setItems(prop.data);
       setCompany(comp.data);
+      setUserRole(profile.data.role);
+      
+      if (profile.data.role !== "seller") {
+        const usrRes = await api.get("/users");
+        setUsers(usrRes.data);
+      }
     } catch (e) {
       Alert.alert("Erro", formatApiError(e));
     } finally {
       setLoading(false);
     }
-  }, [filter]);
+  }, []);
 
   useFocusEffect(
     useCallback(() => {
-      load(filter);
-    }, [load, filter])
+      load(filter, scope, selectedSellerId);
+    }, [load, filter, scope, selectedSellerId])
   );
 
   const onRefresh = async () => {
     setRefreshing(true);
-    await load(filter);
+    await load(filter, scope, selectedSellerId);
     setRefreshing(false);
   };
 
@@ -139,7 +163,8 @@ export default function Proposals() {
       const statusMatch = filter === "all" || p.status === filter;
       if (!statusMatch) return false;
       if (!searchTerm) return true;
-      return [p.client_name, p.client_document, p.client_phone, formatCurrency(p.total)]
+      const seller = p.seller_name || "Vendedor Geral";
+      return [p.client_name, p.client_document, p.client_phone, seller, formatCurrency(p.total)]
         .some((value) => value.toLowerCase().includes(searchTerm));
     });
   }, [items, filter, searchTerm]);
@@ -205,6 +230,9 @@ export default function Proposals() {
               <Text style={s.sub} numberOfLines={1}>
                 {p.client_document} · {p.client_phone}
               </Text>
+              <Text style={s.sellerNameMobile} numberOfLines={1}>
+                Consultor: {p.seller_name || "Vendedor Geral"}
+              </Text>
               <View style={s.rowBottom}>
                 <Text style={s.total}>{formatCurrency(p.total)}</Text>
                 <Text style={s.date}>{formatDate(p.created_at)}</Text>
@@ -265,6 +293,7 @@ export default function Proposals() {
           <Text style={[s.tableCell, s.colClient, s.tableHeading]}>Cliente</Text>
           <Text style={[s.tableCell, s.colMedium, s.tableHeading]}>Documento</Text>
           <Text style={[s.tableCell, s.colMedium, s.tableHeading]}>Telefone</Text>
+          <Text style={[s.tableCell, s.colMedium, s.tableHeading]}>Vendedor</Text>
           <Text style={[s.tableCell, s.colSmall, s.tableHeading]}>Status</Text>
           <Text style={[s.tableCell, s.colSmall, s.tableHeading]}>Total</Text>
           <Text style={[s.tableCell, s.colSmall, s.tableHeading]}>Criado</Text>
@@ -284,6 +313,7 @@ export default function Proposals() {
               </TouchableOpacity>
               <Text style={[s.tableCell, s.colMedium]}>{p.client_document}</Text>
               <Text style={[s.tableCell, s.colMedium]}>{p.client_phone}</Text>
+              <Text style={[s.tableCell, s.colMedium]}>{p.seller_name || "Vendedor Geral"}</Text>
               <View style={[s.tableCell, s.colSmall]}> 
                 <View style={[s.badge, { backgroundColor: st.bg, borderColor: st.border }]}>
                   <Text style={[s.badgeText, { color: st.text }]}>{st.label}</Text>
@@ -369,6 +399,53 @@ export default function Proposals() {
           ))}
         </ScrollView>
       </View>
+
+      {userRole !== "seller" && (
+        <View style={s.scopeFiltersWrapper}>
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={s.filters}>
+            <TouchableOpacity
+              onPress={() => { setScope("todos"); setSelectedSellerId(null); }}
+              style={[s.chip, scope === "todos" && s.chipActive]}
+              testID="scope-filter-todos"
+            >
+              <Text style={[s.chipText, scope === "todos" && s.chipTextActive]}>Todas Propostas</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              onPress={() => { setScope("meu_time"); setSelectedSellerId(null); }}
+              style={[s.chip, scope === "meu_time" && s.chipActive]}
+              testID="scope-filter-meu-time"
+            >
+              <Text style={[s.chipText, scope === "meu_time" && s.chipTextActive]}>Meu Time</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              onPress={() => { setScope("vendedor"); }}
+              style={[s.chip, scope === "vendedor" && s.chipActive]}
+              testID="scope-filter-vendedor"
+            >
+              <Text style={[s.chipText, scope === "vendedor" && s.chipTextActive]}>Por Vendedor</Text>
+            </TouchableOpacity>
+          </ScrollView>
+        </View>
+      )}
+
+      {userRole !== "seller" && scope === "vendedor" && users.length > 0 && (
+        <View style={s.sellerChipsWrapper}>
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={s.filters}>
+            {users.map((u) => (
+              <TouchableOpacity
+                key={u.id}
+                onPress={() => setSelectedSellerId(u.id)}
+                style={[s.sellerChip, selectedSellerId === u.id && s.sellerChipActive]}
+                testID={`seller-filter-${u.id}`}
+              >
+                <Text style={[s.sellerChipText, selectedSellerId === u.id && s.sellerChipTextActive]}>
+                  {u.name}
+                </Text>
+              </TouchableOpacity>
+            ))}
+          </ScrollView>
+        </View>
+      )}
 
       {loading ? (
         <ActivityIndicator style={{ marginTop: 40 }} color={theme.colors.primary} />
@@ -607,4 +684,30 @@ const s = StyleSheet.create({
     gap: 8,
   },
   actionText: { color: "#fff", fontWeight: "700" },
+  sellerNameMobile: { fontSize: 12, color: theme.colors.textSec, marginTop: 4, fontWeight: "500" },
+  scopeFiltersWrapper: { paddingTop: 0 },
+  sellerChipsWrapper: { paddingTop: 0, paddingBottom: 8 },
+  sellerChip: {
+    height: 36,
+    paddingHorizontal: 14,
+    borderRadius: 999,
+    backgroundColor: "#F1F5F9",
+    borderWidth: 1,
+    borderColor: "#E2E8F0",
+    alignItems: "center",
+    justifyContent: "center",
+    marginRight: 8,
+  },
+  sellerChipActive: {
+    backgroundColor: "#6D28D9",
+    borderColor: "#6D28D9",
+  },
+  sellerChipText: {
+    color: "#64748B",
+    fontSize: 13,
+    fontWeight: "600",
+  },
+  sellerChipTextActive: {
+    color: "#fff",
+  },
 });

@@ -1162,6 +1162,9 @@ async def create_proposal(data: ProposalIn, user=Depends(get_current_user)):
         "user_id": user["id"],
         "company_id": user["company_id"],
         "seller_name": user["name"],  # Historical snapshot of seller name
+        "seller_email": user.get("email", ""),
+        "seller_phone": user.get("phone", user.get("telefone", "")),
+        "seller_role": user.get("role", "owner"),
         "client_id": client_id,
         "client_name": data.client_name,
         "client_document": data.client_document,
@@ -1206,14 +1209,27 @@ async def list_proposals(
     status: Optional[str] = None,
     page: Optional[int] = Query(None, ge=1),
     page_size: Optional[int] = Query(None, ge=1, le=100),
+    scope: Optional[str] = None,
+    seller_id: Optional[str] = None,
     user=Depends(get_current_user),
 ):
     role = user.get("role", "owner")
     if role == "seller":
         q = {"company_id": user["company_id"], "user_id": user["id"]}
     else:
-        q = {"$or": [{"company_id": user["company_id"]}, {"user_id": user["id"]}]}
-        
+        if scope == "meu_time":
+            q = {
+                "company_id": user["company_id"],
+                "user_id": {"$ne": user["id"]}
+            }
+        elif scope == "vendedor" and seller_id:
+            q = {
+                "company_id": user["company_id"],
+                "user_id": seller_id
+            }
+        else:
+            q = {"$or": [{"company_id": user["company_id"]}, {"user_id": user["id"]}]}
+            
     q["deleted"] = {"$ne": True}
         
     if status:
@@ -1486,6 +1502,9 @@ async def duplicate_proposal(pid: str, user=Depends(get_current_user)):
         "user_id": user["id"],
         "company_id": user["company_id"],
         "seller_name": user["name"],
+        "seller_email": user.get("email", ""),
+        "seller_phone": user.get("phone", user.get("telefone", "")),
+        "seller_role": user.get("role", "owner"),
         "client_id": client_id,
         "status": "aberto",
         "status_updated_at": now,
@@ -1918,16 +1937,29 @@ async def get_sellers_analytics(user=Depends(get_current_user)):
                 "proposal_count": 0,
                 "approved_count": 0,
                 "lost_count": 0,
-                "revenue": 0.0
+                "open_count": 0,
+                "won_count": 0,
+                "negotiation_count": 0,
+                "revenue": 0.0,
+                "value_sold": 0.0,
+                "value_negotiated": 0.0
             }
             
         stats = seller_stats[seller_name]
         stats["proposal_count"] += 1
+        
         if status in ("aprovado", "realizado"):
             stats["approved_count"] += 1
+            stats["won_count"] += 1
             stats["revenue"] += val
+            stats["value_sold"] += val
         elif status == "perdido":
             stats["lost_count"] += 1
+        elif status == "aberto":
+            stats["open_count"] += 1
+        elif status == "negociacao":
+            stats["negotiation_count"] += 1
+            stats["value_negotiated"] += val
 
     result = []
     for seller, stats in seller_stats.items():
@@ -1943,9 +1975,14 @@ async def get_sellers_analytics(user=Depends(get_current_user)):
             "proposal_count": proposal_count,
             "approved_count": approved_count,
             "lost_count": stats["lost_count"],
+            "open_count": stats["open_count"],
+            "won_count": stats["won_count"],
+            "negotiation_count": stats["negotiation_count"],
             "conversion_rate": conversion_rate,
             "ticket_average": ticket_average,
-            "revenue": round(revenue, 2)
+            "revenue": round(revenue, 2),
+            "value_sold": round(stats["value_sold"], 2),
+            "value_negotiated": round(stats["value_negotiated"], 2)
         })
         
     result.sort(key=lambda x: x["revenue"], reverse=True)
