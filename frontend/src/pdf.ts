@@ -48,6 +48,10 @@ type Proposal = {
   payment_terms?: string;
   validity_days?: number;
   created_at: string;
+  seller_name?: string;
+  seller_email?: string;
+  seller_phone?: string;
+  seller_role?: string;
 };
 
 function logoSrc(
@@ -578,6 +582,24 @@ function proposalHtml(
 
           </div>
 
+        </div>
+      `
+          : ""
+      }
+
+      ${
+        proposal.seller_name
+          ? `
+        <div class="section">
+          <h2>Consultor Comercial</h2>
+          <div class="card">
+            <div style="font-size:14px;line-height:1.6;color:#334155;">
+              <div><strong>Nome:</strong> ${escape_(proposal.seller_name)}</div>
+              ${proposal.seller_role ? `<div><strong>Cargo:</strong> ${escape_(proposal.seller_role)}</div>` : ""}
+              ${proposal.seller_phone ? `<div><strong>Telefone:</strong> ${escape_(proposal.seller_phone)}</div>` : ""}
+              ${proposal.seller_email ? `<div><strong>E-mail:</strong> ${escape_(proposal.seller_email)}</div>` : ""}
+            </div>
+          </div>
         </div>
       `
           : ""

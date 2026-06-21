@@ -43,6 +43,7 @@ import {
 } from "../../src/pdf";
 
 import UpgradeModal from "../../src/UpgradeModal";
+import { useAuth } from "../../src/auth";
 
 export default function ProposalDetail() {
   const { id } =
@@ -51,6 +52,7 @@ export default function ProposalDetail() {
     }>();
 
   const router = useRouter();
+  const { user } = useAuth();
 
   const [p, setP] =
     useState<any>(null);
@@ -230,9 +232,26 @@ setP(prop.data);
   };
 
   const onEdit = () => {
+    if (p.acceptance_status === "accepted") {
+      Alert.alert("Atenção", "Esta proposta já foi aceita e não pode ser editada.");
+      return;
+    }
     router.push(
       `/(tabs)/new?editId=${p.id}`
     );
+  };
+
+  const onReopen = async () => {
+    try {
+      setBusy(true);
+      await api.post(`/proposals/${id}/reopen`);
+      Alert.alert("Sucesso", "Proposta reaberta com sucesso!");
+      await load();
+    } catch (e) {
+      Alert.alert("Erro", formatApiError(e));
+    } finally {
+      setBusy(false);
+    }
   };
 
   const onDuplicate =
@@ -289,6 +308,10 @@ setP(prop.data);
   };
 
   const onDelete = () => {
+    if (p.acceptance_status === "accepted") {
+      Alert.alert("Atenção", "Esta proposta já foi aceita e não pode ser excluída.");
+      return;
+    }
     Alert.alert(
       "Excluir proposta",
       "Tem certeza?",
@@ -459,6 +482,39 @@ setP(prop.data);
             {p.client_phone}
           </Text>
         </View>
+
+        {p.acceptance_status && p.acceptance_status !== "pending" && (
+          <View style={[s.card, p.acceptance_status === "accepted" ? { borderColor: theme.colors.success } : { borderColor: theme.colors.danger }]}>
+            <View style={{ flexDirection: "row", alignItems: "center", gap: 8, marginBottom: 8 }}>
+              <Ionicons
+                name={p.acceptance_status === "accepted" ? "checkmark-circle" : "close-circle"}
+                size={22}
+                color={p.acceptance_status === "accepted" ? theme.colors.success : theme.colors.danger}
+              />
+              <Text style={{ fontSize: 15, fontWeight: "800", color: p.acceptance_status === "accepted" ? theme.colors.success : theme.colors.danger }}>
+                {p.acceptance_status === "accepted" ? "PROPOSTA ACEITA" : "PROPOSTA RECUSADA"}
+              </Text>
+            </View>
+            <View style={{ gap: 4, backgroundColor: "#F8FAFC", padding: 12, borderRadius: 8, borderWidth: 1, borderColor: "#E2E8F0" }}>
+              <Text style={{ fontSize: 13, color: theme.colors.text }}><strong>Assinado por:</strong> {p.accept_name || "-"}</Text>
+              <Text style={{ fontSize: 13, color: theme.colors.text }}><strong>Documento:</strong> {p.accept_document || "-"}</Text>
+              <Text style={{ fontSize: 13, color: theme.colors.text }}><strong>Cargo:</strong> {p.accept_role || "-"}</Text>
+              <Text style={{ fontSize: 13, color: theme.colors.text }}><strong>Data/Hora:</strong> {formatDate(p.accept_date || "")}</Text>
+              <Text style={{ fontSize: 13, color: theme.colors.text }}><strong>IP:</strong> {p.accept_ip || "-"}</Text>
+              <Text style={{ fontSize: 13, color: theme.colors.text }}><strong>Dispositivo:</strong> {p.accept_device || "-"}</Text>
+            </View>
+            {p.acceptance_status === "accepted" && user?.role === "owner" && (
+              <TouchableOpacity
+                style={{ marginTop: 12, height: 40, backgroundColor: theme.colors.primary, borderRadius: 8, alignItems: "center", justifyContent: "center" }}
+                onPress={onReopen}
+                disabled={busy}
+                testID="btn-reopen-proposal"
+              >
+                <Text style={{ color: "#fff", fontWeight: "700", fontSize: 13 }}>Reabrir Proposta</Text>
+              </TouchableOpacity>
+            )}
+          </View>
+        )}
 
                 <View style={s.card}>
           <Text style={s.sectionLabel}>Itens</Text>

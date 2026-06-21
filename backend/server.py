@@ -440,6 +440,14 @@ def normalize_proposal(p: dict) -> dict:
     p["seller_email"] = p.get("seller_email") or ""
     p["seller_phone"] = p.get("seller_phone") or ""
     p["seller_role"] = p.get("seller_role") or ""
+    # Ensure acceptance fields exist
+    p["acceptance_status"] = p.get("acceptance_status") or "pending"
+    p["accept_name"] = p.get("accept_name") or ""
+    p["accept_document"] = p.get("accept_document") or ""
+    p["accept_role"] = p.get("accept_role") or ""
+    p["accept_date"] = p.get("accept_date") or ""
+    p["accept_ip"] = p.get("accept_ip") or ""
+    p["accept_device"] = p.get("accept_device") or ""
     return p
 
 
@@ -1187,6 +1195,13 @@ async def create_proposal(data: ProposalIn, user=Depends(get_current_user)):
         "status": "aberto",
         "status_updated_at": now,
         "lost_reason": "",
+        "acceptance_status": "pending",
+        "accept_name": "",
+        "accept_document": "",
+        "accept_role": "",
+        "accept_date": "",
+        "accept_ip": "",
+        "accept_device": "",
         "created_at": now,
         "updated_at": now,
         "last_reminded_at": None,
@@ -1310,6 +1325,9 @@ async def update_proposal(pid: str, data: ProposalIn, user=Depends(get_current_u
     if role == "seller" and doc.get("user_id") != user["id"]:
         raise HTTPException(status_code=404, detail="Proposta não encontrada")
         
+    if doc.get("acceptance_status") == "accepted":
+        raise HTTPException(status_code=400, detail="Não é permitido editar uma proposta que já foi aceita")
+        
     resolved_products = []
     subtotal = 0.0
     for item in data.products:
@@ -1428,6 +1446,9 @@ async def change_status(pid: str, data: StatusUpdate, user=Depends(get_current_u
     if role == "seller" and doc.get("user_id") != user["id"]:
         raise HTTPException(status_code=404, detail="Proposta não encontrada")
         
+    if doc.get("acceptance_status") == "accepted":
+        raise HTTPException(status_code=400, detail="Não é permitido alterar o status de uma proposta aceita. O proprietário deve reabri-la primeiro.")
+        
     # ENFORCE TRANSITION GRAPH HERE
     current_status = doc.get("status", "aberto")
     if current_status == "realizado":
@@ -1530,6 +1551,13 @@ async def duplicate_proposal(pid: str, user=Depends(get_current_user)):
         "status": "aberto",
         "status_updated_at": now,
         "lost_reason": "",
+        "acceptance_status": "pending",
+        "accept_name": "",
+        "accept_document": "",
+        "accept_role": "",
+        "accept_date": "",
+        "accept_ip": "",
+        "accept_device": "",
         "products": products,
         "subtotal": subtotal,
         "discount": discount,
@@ -1572,6 +1600,9 @@ async def delete_proposal(pid: str, user=Depends(get_current_user)):
     if role == "seller" and doc.get("user_id") != user["id"]:
         raise HTTPException(status_code=404, detail="Proposta não encontrada")
         
+    if doc.get("acceptance_status") == "accepted":
+        raise HTTPException(status_code=400, detail="Não é permitido deletar uma proposta que já foi aceita")
+        
     now = datetime.now(timezone.utc).isoformat()
     await db.proposals.update_one(
         {"id": pid},
@@ -1596,6 +1627,131 @@ async def delete_proposal(pid: str, user=Depends(get_current_user)):
     )
     
     return {"ok": True}
+
+
+class AcceptIn(BaseModel):
+    name: str
+    document: str
+    role: str
+    accepted: bool
+
+
+@api_router.post("/proposals/{pid}/accept")
+async def accept_proposal(pid: str, data: AcceptIn, request: Request):
+    doc = await db.proposals.find_one({"id": pid, "deleted": {"$ne": True}})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Proposta não encontrada")
+        
+    current_status = doc.get("acceptance_status", "pending")
+    if current_status in ("accepted", "rejected"):
+        raise HTTPException(status_code=400, detail="Este aceite já foi finalizado e não pode ser alterado")
+        
+    ip = request.client.host if request.client else ""
+    user_agent = request.headers.get("user-agent", "")
+    
+    device = "Desconhecido"
+    ua_lower = user_agent.lower()
+    if "iphone" in ua_lower:
+        device = "iPhone"
+    elif "ipad" in ua_lower:
+        device = "iPad"
+    elif "android" in ua_lower:
+        device = "Android"
+    elif "windows" in ua_lower:
+        device = "Windows Desktop"
+    elif "macintosh" in ua_lower or "mac os" in ua_lower:
+        device = "Mac Desktop"
+    elif "linux" in ua_lower:
+        device = "Linux Desktop"
+        
+    target_status = "accepted" if data.accepted else "rejected"
+    now = datetime.now(timezone.utc).isoformat()
+    
+    update = {
+        "acceptance_status": target_status,
+        "accept_name": data.name,
+        "accept_document": data.document,
+        "accept_role": data.role,
+        "accept_date": now,
+        "accept_ip": ip,
+        "accept_device": f"{device} ({user_agent[:100]})" if user_agent else device
+    }
+    
+    if data.accepted:
+        update["status"] = "aprovado"
+        update["status_updated_at"] = now
+    else:
+        update["status"] = "perdido"
+        update["lost_reason"] = "Recusado pelo cliente no aceite digital"
+        update["status_updated_at"] = now
+        
+    await db.proposals.update_one({"id": pid}, {"$set": update})
+    updated_doc = await db.proposals.find_one({"id": pid}, {"_id": 0})
+    
+    await log_audit(
+        action="accept" if data.accepted else "reject",
+        entity_type="proposal",
+        entity_id=pid,
+        old_value=doc,
+        new_value=updated_doc,
+        user_id=doc.get("user_id", ""),
+        company_id=doc.get("company_id", "")
+    )
+    
+    return normalize_proposal(updated_doc)
+
+
+@api_router.post("/proposals/{pid}/reopen")
+async def reopen_proposal(pid: str, user=Depends(get_current_user)):
+    role = user.get("role", "owner")
+    if role != "owner":
+        raise HTTPException(status_code=403, detail="Apenas o proprietário (owner) pode reabrir a proposta")
+        
+    doc = await db.proposals.find_one({"id": pid, "deleted": {"$ne": True}})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Proposta não encontrada")
+        
+    update = {
+        "acceptance_status": "pending",
+        "accept_name": "",
+        "accept_document": "",
+        "accept_role": "",
+        "accept_date": "",
+        "accept_ip": "",
+        "accept_device": ""
+    }
+    await db.proposals.update_one({"id": pid}, {"$set": update})
+    updated_doc = await db.proposals.find_one({"id": pid}, {"_id": 0})
+    
+    await log_audit(
+        action="reopen",
+        entity_type="proposal",
+        entity_id=pid,
+        old_value=doc,
+        new_value=updated_doc,
+        user_id=user["id"],
+        company_id=user["company_id"]
+    )
+    return normalize_proposal(updated_doc)
+
+
+@api_router.get("/public/proposals/{pid}")
+async def get_public_proposal(pid: str):
+    doc = await db.proposals.find_one({"id": pid, "deleted": {"$ne": True}}, {"_id": 0})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Proposta não encontrada")
+        
+    company_id = doc.get("company_id")
+    company = None
+    if company_id:
+        company = await db.companies.find_one({"id": company_id}, {"_id": 0})
+        
+    return {
+        "proposal": normalize_proposal(doc),
+        "company": company or {}
+    }
+
+
 # ---------- Upload image ----------
 @api_router.post("/upload/image")
 async def upload_image(
@@ -1715,6 +1871,11 @@ async def get_stats(user=Depends(get_current_user)):
         if last_dt < limit_180:
             clients_lost += 1
 
+    acceptance_pending_count = sum(1 for p in items if p.get("acceptance_status", "pending") == "pending")
+    acceptance_accepted_count = sum(1 for p in items if p.get("acceptance_status", "pending") == "accepted")
+    acceptance_rejected_count = sum(1 for p in items if p.get("acceptance_status", "pending") == "rejected")
+    acceptance_rate = round((acceptance_accepted_count / total_proposals * 100), 2) if total_proposals > 0 else 0.0
+
     ticket_average = total_revenue / approved_proposals if approved_proposals > 0 else 0.0
 
     plan_state = await get_user_plan_state(user["id"])
@@ -1738,6 +1899,11 @@ async def get_stats(user=Depends(get_current_user)):
         "clients_active": clients_active,
         "clients_lost": clients_lost,
         "negotiation_count": total_negotiation,
+        # Acceptance fields
+        "acceptance_pending_count": acceptance_pending_count,
+        "acceptance_accepted_count": acceptance_accepted_count,
+        "acceptance_rejected_count": acceptance_rejected_count,
+        "acceptance_rate": acceptance_rate,
         **plan_state,
     }
 

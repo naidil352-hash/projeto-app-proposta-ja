@@ -48,6 +48,10 @@ type Stats = {
   clients_lost?: number;
   negotiation_count?: number;
   conversion_rate?: number;
+  acceptance_pending_count?: number;
+  acceptance_accepted_count?: number;
+  acceptance_rejected_count?: number;
+  acceptance_rate?: number;
 };
 
 export default function Dashboard() {
@@ -263,6 +267,43 @@ export default function Dashboard() {
         />
         <View style={{ flex: 1, minWidth: 200 }} />
         <View style={{ flex: 1, minWidth: 200 }} />
+      </View>
+
+      <Text style={s.sectionTitle}>Aceite Comercial (Digital)</Text>
+
+      <View style={s.kpiRow}>
+        <MetricCard
+          testID="card-acceptance-pending"
+          icon="time-outline"
+          label="Aguardando Aceite"
+          value={String(stats?.acceptance_pending_count ?? 0)}
+          sub="propostas"
+          accent="#f59e0b"
+        />
+        <MetricCard
+          testID="card-acceptance-accepted"
+          icon="checkmark-done-circle-outline"
+          label="Aceitas"
+          value={String(stats?.acceptance_accepted_count ?? 0)}
+          sub="propostas"
+          accent={theme.colors.success}
+        />
+        <MetricCard
+          testID="card-acceptance-rejected"
+          icon="close-circle-outline"
+          label="Recusadas"
+          value={String(stats?.acceptance_rejected_count ?? 0)}
+          sub="propostas"
+          accent={theme.colors.danger}
+        />
+        <MetricCard
+          testID="card-acceptance-rate"
+          icon="ribbon-outline"
+          label="Taxa de Aceite"
+          value={`${stats?.acceptance_rate ?? 0}%`}
+          sub="taxa de sucesso"
+          accent="#0284c7"
+        />
       </View>
 
       <View style={s.analyticsRow}>
@@ -800,6 +841,46 @@ export default function Dashboard() {
               value={String(stats?.clients_lost ?? 0)}
               sub="há 180+ dias"
               accent={theme.colors.danger}
+            />
+          </View>
+
+          <Text style={s.sectionTitle}>Aceite Comercial (Digital)</Text>
+
+          <View style={s.gridRow}>
+            <MetricCard
+              testID="card-acceptance-pending"
+              icon="time-outline"
+              label="Aguardando Aceite"
+              value={String(stats?.acceptance_pending_count ?? 0)}
+              sub="propostas"
+              accent="#f59e0b"
+            />
+            <MetricCard
+              testID="card-acceptance-accepted"
+              icon="checkmark-done-circle-outline"
+              label="Aceitas"
+              value={String(stats?.acceptance_accepted_count ?? 0)}
+              sub="propostas"
+              accent={theme.colors.success}
+            />
+          </View>
+
+          <View style={s.gridRow}>
+            <MetricCard
+              testID="card-acceptance-rejected"
+              icon="close-circle-outline"
+              label="Recusadas"
+              value={String(stats?.acceptance_rejected_count ?? 0)}
+              sub="propostas"
+              accent={theme.colors.danger}
+            />
+            <MetricCard
+              testID="card-acceptance-rate"
+              icon="ribbon-outline"
+              label="Taxa de Aceite"
+              value={`${stats?.acceptance_rate ?? 0}%`}
+              sub="taxa de sucesso"
+              accent="#0284c7"
             />
           </View>
 
