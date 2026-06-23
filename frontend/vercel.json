@@ -1,9 +1,9 @@
 {
   "cleanUrls": true,
   "rewrites": [
-    { "source": "/accept/:id", "destination": "/accept/[id].html" },
-    { "source": "/proposal/:id", "destination": "/proposal/[id].html" },
-    { "source": "/p/:code", "destination": "/p/[code].html" },
+    { "source": "/accept/:id", "destination": "/accept/%5Bid%5D" },
+    { "source": "/proposal/:id", "destination": "/proposal/%5Bid%5D" },
+    { "source": "/p/:code", "destination": "/p/%5Bcode%5D" },
     { "source": "/(.*)", "destination": "/index.html" }
   ]
 }
