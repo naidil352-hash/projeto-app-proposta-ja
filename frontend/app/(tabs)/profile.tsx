@@ -47,6 +47,9 @@ type SubscriptionState = {
   pro_until?: string | null;
   month_count?: number;
   month_quota?: number | null;
+  days_remaining?: number | null;
+  trial_is_expired?: boolean;
+  trial_days_remaining?: number | null;
 };
 
 export default function Profile() {
@@ -324,8 +327,12 @@ export default function Profile() {
           data.logo_base64 || ""
         );
 
+        const subData = subRes.data;
+        if (subData) {
+          subData.days_remaining = subData.trial_days_remaining;
+        }
         setSubscription(
-          subRes.data
+          subData
         );
       } finally {
         setLoading(false);
@@ -795,11 +802,11 @@ export default function Profile() {
   };
 
   const renderTrialProgress = () => {
-    if (!user || user.trial_days_remaining === null || user.trial_days_remaining === undefined) {
+    if (!subscription || subscription.days_remaining === null || subscription.days_remaining === undefined) {
       return null;
     }
 
-    const days = user.trial_days_remaining;
+    const days = subscription.days_remaining;
     const totalDays = 60;
     const progress = Math.max(0, Math.min(1, days / totalDays));
 
@@ -813,9 +820,8 @@ export default function Profile() {
     return (
       <View style={s.trialCard} testID="trial-progress-card">
         <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
-          <Text style={s.trialTitle}>Período de Teste</Text>
-          <Text style={s.trialDaysText}>
-            {user.trial_is_expired ? "Expirado" : `${days} ${days === 1 ? "dia restante" : "dias restantes"}`}
+          <Text style={s.trialTitle} testID="trial-progress-title">
+            Plano Pro • {subscription.trial_is_expired ? "Expirado" : `${days} ${days === 1 ? "dia restante" : "dias restantes"}`}
           </Text>
         </View>
         <View style={s.progressBarBackground}>

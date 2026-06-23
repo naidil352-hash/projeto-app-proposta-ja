@@ -10,6 +10,7 @@ import {
   Alert,
   useWindowDimensions,
   Linking,
+  Image,
 } from "react-native";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { api, formatApiError } from "../../src/api";
@@ -52,6 +53,18 @@ type Company = {
   phone?: string;
   email?: string;
   address?: string;
+  logo_base64?: string;
+};
+
+const getValidityDateStr = (createdAtStr: string, validityDays?: number) => {
+  if (!validityDays) return "";
+  try {
+    const d = new Date(createdAtStr);
+    d.setDate(d.getDate() + validityDays);
+    return d.toLocaleDateString("pt-BR");
+  } catch (e) {
+    return "";
+  }
 };
 
 export default function PublicAcceptByCode() {
@@ -145,6 +158,17 @@ export default function PublicAcceptByCode() {
         
         {/* Header da Empresa */}
         <View style={s.headerCard}>
+          {company?.logo_base64 ? (
+            <Image
+              source={{
+                uri: company.logo_base64.startsWith("data:")
+                  ? company.logo_base64
+                  : `data:image/png;base64,${company.logo_base64}`,
+              }}
+              style={s.companyLogo}
+              testID="company-logo"
+            />
+          ) : null}
           <Text style={s.companyName}>{company?.company_name || "Sua Empresa"}</Text>
           {company?.cnpj ? <Text style={s.companyMeta}>CNPJ: {company.cnpj}</Text> : null}
           {company?.phone || company?.email ? (
@@ -162,6 +186,12 @@ export default function PublicAcceptByCode() {
               <Text style={s.metaLabel}>EMISSÃO</Text>
               <Text style={s.metaVal}>{formatDate(p.created_at)}</Text>
             </View>
+            {p.validity_days ? (
+              <View>
+                <Text style={s.metaLabel}>VALIDADE</Text>
+                <Text style={s.metaVal}>{getValidityDateStr(p.created_at, p.validity_days)}</Text>
+              </View>
+            ) : null}
           </View>
         </View>
 
@@ -221,13 +251,12 @@ export default function PublicAcceptByCode() {
                 onPress={() => {
                   const cleaned = p.seller_whatsapp!.replace(/\D/g, "");
                   const phoneWithCountry = cleaned.startsWith("55") ? cleaned : `55${cleaned}`;
-                  const text = encodeURIComponent("Olá, estou analisando a proposta enviada.");
-                  Linking.openURL(`https://wa.me/${phoneWithCountry}?text=${text}`);
+                  Linking.openURL(`https://wa.me/${phoneWithCountry}`);
                 }}
                 testID="btn-whatsapp"
               >
                 <Ionicons name="logo-whatsapp" size={16} color="#fff" />
-                <Text style={s.whatsappBtnText}>Falar com o Consultor</Text>
+                <Text style={s.whatsappBtnText}>FALAR COM O CONSULTOR</Text>
               </TouchableOpacity>
             ) : null}
           </View>
@@ -237,22 +266,17 @@ export default function PublicAcceptByCode() {
         {isFinalized ? (
           <View style={[s.card, p.acceptance_status === "accepted" ? s.acceptedCard : s.rejectedCard]}>
             <View style={s.rowAlign}>
-              <Ionicons
-                name={p.acceptance_status === "accepted" ? "checkmark-circle" : "close-circle"}
-                size={28}
-                color={p.acceptance_status === "accepted" ? theme.colors.success : theme.colors.danger}
-              />
               <Text style={[s.statusTitle, { color: p.acceptance_status === "accepted" ? theme.colors.success : theme.colors.danger }]}>
-                {p.acceptance_status === "accepted" ? "PROPOSTA ACEITA" : "PROPOSTA RECUSADA"}
+                {p.acceptance_status === "accepted" ? "✅ Proposta aceita." : "❌ Proposta recusada."}
               </Text>
             </View>
             <View style={s.evidenceBox}>
-              <Text style={s.evidenceText}><strong>Assinado por:</strong> {p.accept_name || "-"}</Text>
-              <Text style={s.evidenceText}><strong>Documento:</strong> {p.accept_document || "-"}</Text>
-              <Text style={s.evidenceText}><strong>Cargo:</strong> {p.accept_role || "-"}</Text>
-              <Text style={s.evidenceText}><strong>Data/Hora:</strong> {formatDate(p.accept_date || "")}</Text>
-              <Text style={s.evidenceText}><strong>IP de registro:</strong> {p.accept_ip || "-"}</Text>
-              <Text style={s.evidenceText}><strong>Dispositivo:</strong> {p.accept_device || "-"}</Text>
+              <Text style={s.evidenceText}><Text style={{ fontWeight: "700" }}>Assinado por:</Text> {p.accept_name || "-"}</Text>
+              <Text style={s.evidenceText}><Text style={{ fontWeight: "700" }}>Documento:</Text> {p.accept_document || "-"}</Text>
+              <Text style={s.evidenceText}><Text style={{ fontWeight: "700" }}>Cargo:</Text> {p.accept_role || "-"}</Text>
+              <Text style={s.evidenceText}><Text style={{ fontWeight: "700" }}>Data/Hora:</Text> {formatDate(p.accept_date || "")}</Text>
+              <Text style={s.evidenceText}><Text style={{ fontWeight: "700" }}>IP de registro:</Text> {p.accept_ip || "-"}</Text>
+              <Text style={s.evidenceText}><Text style={{ fontWeight: "700" }}>Dispositivo:</Text> {p.accept_device || "-"}</Text>
             </View>
           </View>
         ) : (
@@ -306,7 +330,7 @@ export default function PublicAcceptByCode() {
                 disabled={busy}
                 testID="btn-submit-accept"
               >
-                {busy ? <ActivityIndicator color="#fff" /> : <Text style={s.btnText}>Aceitar Proposta</Text>}
+                {busy ? <ActivityIndicator color="#fff" /> : <Text style={s.btnText}>ACEITAR PROPOSTA</Text>}
               </TouchableOpacity>
               
               <TouchableOpacity
@@ -315,7 +339,7 @@ export default function PublicAcceptByCode() {
                 disabled={busy}
                 testID="btn-submit-reject"
               >
-                {busy ? <ActivityIndicator color="#fff" /> : <Text style={[s.btnText, { color: theme.colors.danger }]}>Recusar Proposta</Text>}
+                {busy ? <ActivityIndicator color="#fff" /> : <Text style={[s.btnText, { color: theme.colors.danger }]}>RECUSAR PROPOSTA</Text>}
               </TouchableOpacity>
             </View>
           </View>
@@ -338,6 +362,7 @@ const s = StyleSheet.create({
     borderRadius: 16,
     padding: 20,
   },
+  companyLogo: { width: 120, height: 60, resizeMode: "contain", marginBottom: 12 },
   companyName: { fontSize: 22, fontWeight: "800", color: theme.colors.text },
   companyMeta: { fontSize: 13, color: theme.colors.textSec, marginTop: 4 },
   divider: { height: 1, backgroundColor: theme.colors.border, marginVertical: 16 },

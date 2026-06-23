@@ -16,6 +16,8 @@ import {
 
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
+import * as Clipboard from "expo-clipboard";
+import * as Linking from "expo-linking";
 
 import {
   useFocusEffect,
@@ -105,6 +107,8 @@ export default function ProposalDetail() {
 
   const [busy, setBusy] =
     useState(false);
+
+  const [copied, setCopied] = useState(false);
 
   const [
     upgradeOpen,
@@ -492,35 +496,47 @@ setP(prop.data);
           </Text>
         </View>
 
-        {p.proposal_viewed_at ? (
-          <View style={s.viewedStatusRow}>
-            <Text style={s.viewedStatusText}>
-              ✓ Visualizada em {formatDateTime(p.proposal_viewed_at)}
-            </Text>
+        {p.acceptance_status === "accepted" || p.status === "accepted" || p.status === "aprovado" ? (
+          <View style={[s.viewedCard, { borderColor: theme.colors.success, backgroundColor: "#ECFDF5" }]} testID="proposal-feedback-accepted">
+            <View style={{ flexDirection: "row", alignItems: "center", gap: 10 }}>
+              <Ionicons name="checkmark-circle" size={24} color={theme.colors.success} />
+              <Text style={{ fontSize: 15, fontWeight: "700", color: theme.colors.statusWonText }}>
+                ✅ Cliente aceitou a proposta.
+              </Text>
+            </View>
           </View>
-        ) : null}
-
-        {p.status === "aberto" && p.proposal_viewed_at ? (
-          <View style={s.viewedCard}>
+        ) : p.acceptance_status === "rejected" || p.status === "rejected" || p.status === "perdido" ? (
+          <View style={[s.viewedCard, { borderColor: theme.colors.danger, backgroundColor: "#FEF2F2" }]} testID="proposal-feedback-rejected">
+            <View style={{ flexDirection: "row", alignItems: "center", gap: 10 }}>
+              <Ionicons name="close-circle" size={24} color={theme.colors.danger} />
+              <Text style={{ fontSize: 15, fontWeight: "700", color: theme.colors.statusLostText }}>
+                ❌ Cliente recusou a proposta.
+              </Text>
+            </View>
+          </View>
+        ) : p.proposal_viewed_at ? (
+          <View style={s.viewedCard} testID="proposal-feedback-viewed">
             <View style={{ flexDirection: "row", alignItems: "center", gap: 10 }}>
               <Ionicons name="eye-outline" size={24} color={theme.colors.primary} />
               <View style={{ flex: 1 }}>
                 <Text style={{ fontSize: 15, fontWeight: "700", color: theme.colors.text }}>
-                  Cliente visualizou a proposta.
+                  👁 Cliente visualizou.
                 </Text>
-                <Text style={{ fontSize: 13, color: theme.colors.textSec }}>
-                  Cliente visualizou {formatTimeAgo(p.proposal_viewed_at)}.
+                <Text style={{ fontSize: 13, color: theme.colors.textSec, marginTop: 4 }}>
+                  {formatDateTime(p.proposal_viewed_at).replace(" às ", " ")}
                 </Text>
               </View>
             </View>
-            <TouchableOpacity
-              style={s.viewedBtn}
-              onPress={onFollowUp}
-              testID="btn-viewed-whatsapp"
-            >
-              <Ionicons name="logo-whatsapp" size={16} color="#fff" />
-              <Text style={s.viewedBtnText}>Enviar WhatsApp</Text>
-            </TouchableOpacity>
+            {p.status === "aberto" && (
+              <TouchableOpacity
+                style={s.viewedBtn}
+                onPress={onFollowUp}
+                testID="btn-viewed-whatsapp"
+              >
+                <Ionicons name="logo-whatsapp" size={16} color="#fff" />
+                <Text style={s.viewedBtnText}>Enviar WhatsApp</Text>
+              </TouchableOpacity>
+            )}
           </View>
         ) : null}
 
@@ -563,6 +579,64 @@ setP(prop.data);
             {p.client_phone}
           </Text>
         </View>
+
+        {p.status === "aberto" && (
+          <View style={s.card} testID="share-proposal-card">
+            <Text style={{ fontSize: 14, fontWeight: "800", color: theme.colors.textSec, marginBottom: 8, letterSpacing: 0.5 }}>
+              COMPARTILHAR PROPOSTA
+            </Text>
+            <Text style={{ fontSize: 13, color: theme.colors.text, marginBottom: 12, fontWeight: "600" }} numberOfLines={1}>
+              {`https://projeto-app-proposta-ja.vercel.app/p/${p.public_code}`}
+            </Text>
+            <View style={{ flexDirection: "row", gap: 12 }}>
+              <TouchableOpacity
+                style={{ flex: 1, height: 40, backgroundColor: theme.colors.primary, borderRadius: 8, alignItems: "center", justifyContent: "center" }}
+                onPress={async () => {
+                  const link = `https://projeto-app-proposta-ja.vercel.app/p/${p.public_code}`;
+                  await Clipboard.setStringAsync(link);
+                  setCopied(true);
+                  setTimeout(() => setCopied(false), 2000);
+                }}
+                testID="btn-copy-link"
+              >
+                <Text style={{ color: "#fff", fontWeight: "700", fontSize: 13 }}>
+                  {copied ? "Link copiado." : "COPIAR LINK"}
+                </Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={{ flex: 1, height: 40, backgroundColor: "#25D366", borderRadius: 8, alignItems: "center", justifyContent: "center", flexDirection: "row", gap: 6 }}
+                onPress={async () => {
+                  const link = `https://projeto-app-proposta-ja.vercel.app/p/${p.public_code}`;
+                  const clientPhone = p.client_phone ? p.client_phone.replace(/\D/g, "") : "";
+                  const message = `Olá.
+
+Segue sua proposta comercial:
+
+${link}
+
+Qualquer dúvida estou à disposição.
+
+${p.seller_name || ""}`;
+                  
+                  let formattedPhone = clientPhone;
+                  if (formattedPhone && !formattedPhone.startsWith("55") && formattedPhone.length <= 11) {
+                    formattedPhone = "55" + formattedPhone;
+                  }
+                  
+                  const waUrl = formattedPhone 
+                    ? `https://wa.me/${formattedPhone}?text=${encodeURIComponent(message)}` 
+                    : `https://wa.me/?text=${encodeURIComponent(message)}`;
+                  
+                  await Linking.openURL(waUrl);
+                }}
+                testID="btn-share-whatsapp"
+              >
+                <Ionicons name="logo-whatsapp" size={16} color="#fff" />
+                <Text style={{ color: "#fff", fontWeight: "700", fontSize: 13 }}>WHATSAPP</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        )}
 
         {p.acceptance_status && p.acceptance_status !== "pending" && (
           <View style={[s.card, p.acceptance_status === "accepted" ? { borderColor: theme.colors.success } : { borderColor: theme.colors.danger }]}>

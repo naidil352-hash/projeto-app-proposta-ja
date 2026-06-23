@@ -52,6 +52,8 @@ type Stats = {
   acceptance_accepted_count?: number;
   acceptance_rejected_count?: number;
   acceptance_rate?: number;
+  is_trial?: boolean;
+  trial_days_remaining?: number | null;
 };
 
 export default function Dashboard() {
@@ -64,6 +66,8 @@ export default function Dashboard() {
 
   const [stats, setStats] =
     useState<Stats | null>(null);
+  const [subscription, setSubscription] = useState<any>(null);
+  const [proposals, setProposals] = useState<any[]>([]);
 
   const [
     refreshing,
@@ -80,10 +84,20 @@ export default function Dashboard() {
       try {
         setErr(null);
 
-        const { data } =
-          await api.get("/stats");
+        const [statsRes, subRes, propRes] = await Promise.all([
+          api.get("/stats"),
+          api.get("/subscription/me"),
+          api.get("/proposals")
+        ]);
 
-        setStats(data);
+        const subData = subRes.data;
+        if (subData) {
+          subData.days_remaining = subData.trial_days_remaining;
+        }
+
+        setStats(statsRes.data);
+        setSubscription(subData);
+        setProposals(propRes.data || []);
       } catch (e) {
         setErr(
           formatApiError(e)
@@ -107,6 +121,11 @@ export default function Dashboard() {
 
       setRefreshing(false);
     };
+
+  const totalProposals = proposals.length;
+  const viewedProposals = proposals.filter((p: any) => p.proposal_viewed_at).length;
+  const acceptedProposals = proposals.filter((p: any) => p.acceptance_status === "accepted" || p.status === "accepted" || p.status === "aprovado").length;
+  const conversionRate = totalProposals > 0 ? Math.round((acceptedProposals / totalProposals) * 100) : 0;
 
   const renderDesktop = () => (
     <ScrollView
@@ -273,36 +292,36 @@ export default function Dashboard() {
 
       <View style={s.kpiRow}>
         <MetricCard
-          testID="card-acceptance-pending"
-          icon="time-outline"
-          label="Aguardando Aceite"
-          value={String(stats?.acceptance_pending_count ?? 0)}
+          testID="card-acceptance-sent"
+          icon="paper-plane-outline"
+          label="Enviadas"
+          value={String(totalProposals)}
           sub="propostas"
+          accent="#0284c7"
+        />
+        <MetricCard
+          testID="card-acceptance-viewed"
+          icon="eye-outline"
+          label="Visualizadas"
+          value={String(viewedProposals)}
+          sub="visualizadas"
           accent="#f59e0b"
         />
         <MetricCard
           testID="card-acceptance-accepted"
           icon="checkmark-done-circle-outline"
           label="Aceitas"
-          value={String(stats?.acceptance_accepted_count ?? 0)}
-          sub="propostas"
+          value={String(acceptedProposals)}
+          sub="aceitas"
           accent={theme.colors.success}
         />
         <MetricCard
-          testID="card-acceptance-rejected"
-          icon="close-circle-outline"
-          label="Recusadas"
-          value={String(stats?.acceptance_rejected_count ?? 0)}
-          sub="propostas"
-          accent={theme.colors.danger}
-        />
-        <MetricCard
           testID="card-acceptance-rate"
-          icon="ribbon-outline"
-          label="Taxa de Aceite"
-          value={`${stats?.acceptance_rate ?? 0}%`}
-          sub="taxa de sucesso"
-          accent="#0284c7"
+          icon="trending-up-outline"
+          label="Conversão"
+          value={`${conversionRate}%`}
+          sub="conversão"
+          accent="#6D28D9"
         />
       </View>
 
@@ -658,15 +677,9 @@ export default function Dashboard() {
                   s.proBannerText
                 }
               >
-                Plano Pro ativo ·{" "}
-                {stats.pro_until
-                  ? "renove até " +
-                    new Date(
-                      stats.pro_until
-                    ).toLocaleDateString(
-                      "pt-BR"
-                    )
-                  : ""}
+                {stats.is_trial || stats.trial_days_remaining !== null
+                  ? `Plano Pro • ${subscription?.days_remaining ?? stats?.trial_days_remaining ?? 60} ${(subscription?.days_remaining ?? stats?.trial_days_remaining ?? 60) === 1 ? "dia restante" : "dias restantes"}`
+                  : `Plano Pro ativo · renove até ${stats.pro_until ? new Date(stats.pro_until).toLocaleDateString("pt-BR") : ""}`}
               </Text>
             </View>
           )}
@@ -848,39 +861,39 @@ export default function Dashboard() {
 
           <View style={s.gridRow}>
             <MetricCard
-              testID="card-acceptance-pending"
-              icon="time-outline"
-              label="Aguardando Aceite"
-              value={String(stats?.acceptance_pending_count ?? 0)}
+              testID="card-acceptance-sent"
+              icon="paper-plane-outline"
+              label="Enviadas"
+              value={String(totalProposals)}
               sub="propostas"
-              accent="#f59e0b"
+              accent="#0284c7"
             />
             <MetricCard
-              testID="card-acceptance-accepted"
-              icon="checkmark-done-circle-outline"
-              label="Aceitas"
-              value={String(stats?.acceptance_accepted_count ?? 0)}
-              sub="propostas"
-              accent={theme.colors.success}
+              testID="card-acceptance-viewed"
+              icon="eye-outline"
+              label="Visualizadas"
+              value={String(viewedProposals)}
+              sub="visualizadas"
+              accent="#f59e0b"
             />
           </View>
 
           <View style={s.gridRow}>
             <MetricCard
-              testID="card-acceptance-rejected"
-              icon="close-circle-outline"
-              label="Recusadas"
-              value={String(stats?.acceptance_rejected_count ?? 0)}
-              sub="propostas"
-              accent={theme.colors.danger}
+              testID="card-acceptance-accepted"
+              icon="checkmark-done-circle-outline"
+              label="Aceitas"
+              value={String(acceptedProposals)}
+              sub="aceitas"
+              accent={theme.colors.success}
             />
             <MetricCard
               testID="card-acceptance-rate"
-              icon="ribbon-outline"
-              label="Taxa de Aceite"
-              value={`${stats?.acceptance_rate ?? 0}%`}
-              sub="taxa de sucesso"
-              accent="#0284c7"
+              icon="trending-up-outline"
+              label="Conversão"
+              value={`${conversionRate}%`}
+              sub="conversão"
+              accent="#6D28D9"
             />
           </View>
 
