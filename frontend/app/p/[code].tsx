@@ -12,8 +12,8 @@ import {
   Linking,
 } from "react-native";
 import { useLocalSearchParams, useRouter } from "expo-router";
-import { api, formatApiError } from "../../../src/api";
-import { theme, formatCurrency, formatDate, getRoleLabel } from "../../../src/theme";
+import { api, formatApiError } from "../../src/api";
+import { theme, formatCurrency, formatDate, getRoleLabel } from "../../src/theme";
 import { Ionicons } from "@expo/vector-icons";
 
 type Proposal = {
@@ -54,8 +54,8 @@ type Company = {
   address?: string;
 };
 
-export default function PublicAccept() {
-  const { id } = useLocalSearchParams<{ id: string }>();
+export default function PublicAcceptByCode() {
+  const { code } = useLocalSearchParams<{ code: string }>();
   const router = useRouter();
   const { width } = useWindowDimensions();
   const isDesktop = width >= 900;
@@ -74,7 +74,7 @@ export default function PublicAccept() {
   const load = useCallback(async () => {
     try {
       setLoading(true);
-      const { data } = await api.get(`/public/proposals/${id}`);
+      const { data } = await api.get(`/public/proposals/code/${code}`);
       setP(data.proposal);
       setCompany(data.company);
     } catch (e) {
@@ -82,13 +82,16 @@ export default function PublicAccept() {
     } finally {
       setLoading(false);
     }
-  }, [id]);
+  }, [code]);
 
   React.useEffect(() => {
-    load();
-  }, [load]);
+    if (code) {
+      load();
+    }
+  }, [code, load]);
 
   const handleResponse = async (accepted: boolean) => {
+    if (!p) return;
     if (accepted) {
       if (!name.trim()) return Alert.alert("Atenção", "Por favor, digite seu nome completo.");
       if (!document.trim()) return Alert.alert("Atenção", "Por favor, digite seu CPF/CNPJ.");
@@ -98,7 +101,7 @@ export default function PublicAccept() {
 
     try {
       setBusy(true);
-      await api.post(`/proposals/${id}/accept`, {
+      await api.post(`/proposals/${p.id}/accept`, {
         name: name.trim(),
         document: document.trim(),
         role: role.trim(),
@@ -211,6 +214,7 @@ export default function PublicAccept() {
             {p.seller_role ? <Text style={s.sellerMeta}>Cargo: {getRoleLabel(p.seller_role)}</Text> : null}
             {p.seller_phone ? <Text style={s.sellerMeta}>Telefone: {p.seller_phone}</Text> : null}
             {p.seller_email ? <Text style={s.sellerMeta}>E-mail: {p.seller_email}</Text> : null}
+
             {p.seller_whatsapp ? (
               <TouchableOpacity
                 style={s.whatsappBtn}

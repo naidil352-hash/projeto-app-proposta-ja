@@ -232,10 +232,107 @@ require_admin = require_role(["owner", "admin"])
 require_seller = require_role(["owner", "admin", "seller"])
 
 
+def get_company_trial_status(company: dict) -> dict:
+    import math
+    if not company or "trial_expires_at" not in company:
+        return {
+            "days_remaining": 60,
+            "is_expired": False,
+            "trial_days": 60,
+            "trial_started_at": "",
+            "trial_expires_at": ""
+        }
+    try:
+        expires_at_str = company["trial_expires_at"].replace("Z", "+00:00")
+        expires_at_dt = datetime.fromisoformat(expires_at_str)
+    except Exception:
+        return {
+            "days_remaining": 0,
+            "is_expired": True,
+            "trial_days": 60,
+            "trial_started_at": "",
+            "trial_expires_at": ""
+        }
+    now_dt = datetime.now(expires_at_dt.tzinfo or timezone.utc)
+    if now_dt > expires_at_dt:
+        return {
+            "days_remaining": 0,
+            "is_expired": True,
+            "trial_days": company.get("trial_days", 60),
+            "trial_started_at": company.get("trial_started_at", ""),
+            "trial_expires_at": company.get("trial_expires_at", "")
+        }
+    else:
+        diff_sec = (expires_at_dt - now_dt).total_seconds()
+        days_remaining = math.ceil(diff_sec / 86400.0)
+        days_remaining = max(1, min(60, days_remaining))
+        return {
+            "days_remaining": days_remaining,
+            "is_expired": False,
+            "trial_days": company.get("trial_days", 60),
+            "trial_started_at": company.get("trial_started_at", ""),
+            "trial_expires_at": company.get("trial_expires_at", "")
+        }
+
+async def generate_unique_public_code() -> str:
+    import random
+    import string
+    chars = string.ascii_uppercase + string.digits
+    while True:
+        code = "".join(random.choices(chars, k=6))
+        exists = await db.proposals.find_one({"public_code": code})
+        if not exists:
+            return code
+
+async def verify_trial_not_expired(company_id: str, user_id: str):
+    plan_state = await get_user_plan_state(user_id)
+    if plan_state["is_pro"]:
+        return
+    company = await db.companies.find_one({"id": company_id})
+    if company:
+        trial_status = get_company_trial_status(company)
+        if trial_status["is_expired"]:
+            proposals_count = await db.proposals.count_documents({"company_id": company_id, "deleted": {"$ne": True}})
+            clients_count = await db.clients.count_documents({"company_id": company_id, "deleted": {"$ne": True}})
+            negotiations_count = await db.proposals.count_documents({"company_id": company_id, "deleted": {"$ne": True}, "status": "aprovado"})
+            raise HTTPException(
+                status_code=403,
+                detail=(
+                    "Seu período de avaliação terminou.\n\n"
+                    "Você já gerou:\n"
+                    f"* {proposals_count} propostas\n"
+                    f"* {clients_count} clientes\n"
+                    f"* {negotiations_count} negociações\n\n"
+                    "Assine o Plano Pro para continuar utilizando."
+                )
+            )
+
 async def get_user_plan_state(user_id: str) -> dict:
-    """Returns {plan, pro_until, month_count, month_quota, is_pro, is_trial}."""
+    """Returns {plan, pro_until, month_count, month_quota, is_pro, is_trial, trial_days, trial_started_at, trial_expires_at, trial_days_remaining, trial_is_expired, trial_stats}."""
     user = await db.users.find_one({"id": user_id})
     company_id = user.get("company_id") if user else None
+    
+    if not company_id and user:
+        comp = await db.companies.find_one({"user_id": user_id})
+        if comp:
+            company_id = comp.get("id")
+            
+    company = await db.companies.find_one({"id": company_id}) if company_id else None
+    trial_status = get_company_trial_status(company)
+    
+    proposals_count = 0
+    clients_count = 0
+    negotiations_count = 0
+    if company_id:
+        proposals_count = await db.proposals.count_documents({"company_id": company_id, "deleted": {"$ne": True}})
+        clients_count = await db.clients.count_documents({"company_id": company_id, "deleted": {"$ne": True}})
+        negotiations_count = await db.proposals.count_documents({"company_id": company_id, "deleted": {"$ne": True}, "status": "aprovado"})
+        
+    trial_stats = {
+        "proposals_count": proposals_count,
+        "clients_count": clients_count,
+        "negotiations_count": negotiations_count
+    }
     
     if user and (user.get("founder") or user.get("lifetime")):
         now = datetime.now(timezone.utc)
@@ -258,28 +355,29 @@ async def get_user_plan_state(user_id: str) -> dict:
             "subscription_status": "active",
             "founder": True,
             "lifetime": True,
+            "trial_days": None,
+            "trial_started_at": None,
+            "trial_expires_at": None,
+            "trial_days_remaining": None,
+            "trial_is_expired": False,
+            "trial_stats": trial_stats
         }
-    
-    # Resolve company_id and owner_id for fallback
+        
+    # Resolve owner_id for fallback
     owner_id = user_id
     if company_id:
-        company = await db.companies.find_one({"id": company_id})
         if company and company.get("user_id"):
             owner_id = company["user_id"]
             
     sub = None
     if company_id:
-        # Priority 1: Query subscription by company_id
         sub = await db.subscriptions.find_one({"company_id": company_id}, {"_id": 0})
-        
     if not sub:
-        # Priority 2: Fallback to owner's user_id (legado)
         sub = await db.subscriptions.find_one({"user_id": owner_id}, {"_id": 0})
         
     now = datetime.now(timezone.utc)
     month_start = datetime(now.year, now.month, 1, tzinfo=timezone.utc)
     
-    # Count proposals at the company level
     if company_id:
         month_count = await db.proposals.count_documents(
             {"company_id": company_id, "deleted": {"$ne": True}, "created_at": {"$gte": month_start.isoformat()}}
@@ -302,6 +400,7 @@ async def get_user_plan_state(user_id: str) -> dict:
                     is_trial = True
         except Exception:
             pass
+            
     return {
         "plan": "pro" if is_pro else "free",
         "pro_until": pro_until,
@@ -310,6 +409,12 @@ async def get_user_plan_state(user_id: str) -> dict:
         "is_pro": is_pro,
         "is_trial": is_trial,
         "subscription_status": "active" if is_pro else "inactive",
+        "trial_days": trial_status["trial_days"],
+        "trial_started_at": trial_status["trial_started_at"],
+        "trial_expires_at": trial_status["trial_expires_at"],
+        "trial_days_remaining": trial_status["days_remaining"],
+        "trial_is_expired": trial_status["is_expired"],
+        "trial_stats": trial_stats
     }
 
 
@@ -343,6 +448,39 @@ async def ensure_company_ids() -> None:
             {"$set": {"id": generated_id}},
         )
     print("END ensure_company_ids")
+
+
+async def ensure_company_trials() -> None:
+    """Backfill missing trial fields for existing company documents."""
+    print("START ensure_company_trials")
+    cursor = db.companies.find({"trial_expires_at": {"$exists": False}})
+    async for company in cursor:
+        user_id = company.get("user_id")
+        user_created_at = None
+        if user_id:
+            user = await db.users.find_one({"id": user_id})
+            if user:
+                user_created_at = user.get("created_at")
+        
+        started_at = user_created_at or company.get("created_at") or datetime.now(timezone.utc).isoformat()
+        try:
+            started_dt = datetime.fromisoformat(started_at.replace("Z", "+00:00"))
+        except Exception:
+            started_dt = datetime.now(timezone.utc)
+            started_at = started_dt.isoformat()
+            
+        expires_dt = started_dt + timedelta(days=60)
+        
+        await db.companies.update_one(
+            {"_id": company["_id"]},
+            {"$set": {
+                "trial_days": 60,
+                "trial_started_at": started_at,
+                "trial_expires_at": expires_dt.isoformat()
+            }}
+        )
+        print(f"Backfilled trial for company: {company.get('id') or user_id}")
+    print("END ensure_company_trials")
 
 
 async def get_scope_filter(user: dict) -> dict:
@@ -379,6 +517,8 @@ async def resolve_client_id(company_id: str, name: str, document: str, phone: st
         return client_doc["id"]
     
     # Se não existir, criar automaticamente
+    if user_id:
+        await verify_trial_not_expired(company_id, user_id)
     client_id = f"cli_{uuid.uuid4().hex[:16]}"
     now = datetime.now(timezone.utc).isoformat()
     new_client = {
@@ -439,8 +579,14 @@ def normalize_proposal(p: dict) -> dict:
     p["seller_name"] = p.get("seller_name") or ""
     p["seller_email"] = p.get("seller_email") or ""
     p["seller_phone"] = p.get("seller_phone") or ""
+    p["seller_whatsapp"] = p.get("seller_whatsapp") or ""
     p["seller_role"] = p.get("seller_role") or ""
     p["seller_signature"] = p.get("seller_signature") or ""
+    # Ensure code and view tracking fields exist
+    p["public_code"] = p.get("public_code") or ""
+    p["proposal_viewed_at"] = p.get("proposal_viewed_at") or ""
+    p["proposal_viewed_ip"] = p.get("proposal_viewed_ip") or ""
+    p["proposal_viewed_ua"] = p.get("proposal_viewed_ua") or ""
     # Ensure acceptance fields exist
     p["acceptance_status"] = p.get("acceptance_status") or "pending"
     p["accept_name"] = p.get("accept_name") or ""
@@ -662,6 +808,7 @@ async def on_startup():
     )
 
     await ensure_company_ids()
+    await ensure_company_trials()
 
 
 @app.on_event("shutdown")
@@ -727,6 +874,9 @@ async def register(data: RegisterIn, request: Request):
             "email": email,
             "address": "",
             "logo_base64": "",
+            "trial_days": 60,
+            "trial_started_at": now.isoformat(),
+            "trial_expires_at": (now + timedelta(days=60)).isoformat(),
         }},
         upsert=True,
     )
@@ -933,6 +1083,7 @@ async def create_product(
     data: CatalogProductIn,
     user=Depends(require_admin),
 ):
+    await verify_trial_not_expired(user["company_id"], user["id"])
     company_id = user.get("company_id")
 
     if not company_id:
@@ -1113,6 +1264,7 @@ def _proposal_total(products: List[dict], discount: float = 0.0) -> float:
 
 @api_router.post("/proposals")
 async def create_proposal(data: ProposalIn, user=Depends(get_current_user)):
+    await verify_trial_not_expired(user["company_id"], user["id"])
     # Enforce free tier quota
     state = await get_user_plan_state(user["id"])
     if not state["is_pro"] and state["month_count"] >= FREE_MONTHLY_QUOTA:
@@ -1180,14 +1332,17 @@ async def create_proposal(data: ProposalIn, user=Depends(get_current_user)):
     )
 
     pid = str(uuid.uuid4())
+    public_code = await generate_unique_public_code()
     now = datetime.now(timezone.utc).isoformat()
     doc = {
         "id": pid,
+        "public_code": public_code,
         "user_id": user["id"],
         "company_id": user["company_id"],
         "seller_name": user.get("name") or "",  # Historical snapshot of seller name
         "seller_email": user.get("email") or "",
         "seller_phone": user.get("phone") or "",
+        "seller_whatsapp": user.get("whatsapp") or "",
         "seller_role": user.get("role") or "owner",
         "seller_signature": user.get("signature_url") or user.get("seller_signature") or "",
         "client_id": client_id,
@@ -1514,6 +1669,7 @@ async def change_status(pid: str, data: StatusUpdate, user=Depends(get_current_u
 
 @api_router.post("/proposals/{pid}/duplicate")
 async def duplicate_proposal(pid: str, user=Depends(get_current_user)):
+    await verify_trial_not_expired(user["company_id"], user["id"])
     role = user.get("role", "owner")
     orig = await db.proposals.find_one({"id": pid, "deleted": {"$ne": True}}, {"_id": 0})
     if not orig:
@@ -1534,6 +1690,7 @@ async def duplicate_proposal(pid: str, user=Depends(get_current_user)):
         )
     now = datetime.now(timezone.utc).isoformat()
     new_id = str(uuid.uuid4())
+    public_code = await generate_unique_public_code()
     
     products = orig.get("products", [])
     subtotal = sum(item.get("quantity", 0) * (item.get("unit_price") or item.get("price") or 0.0) for item in products)
@@ -1553,11 +1710,13 @@ async def duplicate_proposal(pid: str, user=Depends(get_current_user)):
     clone = {
         **orig,
         "id": new_id,
+        "public_code": public_code,
         "user_id": user["id"],
         "company_id": user["company_id"],
         "seller_name": user.get("name") or "",
         "seller_email": user.get("email") or "",
         "seller_phone": user.get("phone") or "",
+        "seller_whatsapp": user.get("whatsapp") or "",
         "seller_role": user.get("role") or "owner",
         "seller_signature": user.get("signature_url") or user.get("seller_signature") or "",
         "client_id": client_id,
@@ -1749,11 +1908,73 @@ async def reopen_proposal(pid: str, user=Depends(get_current_user)):
 
 
 @api_router.get("/public/proposals/{pid}")
-async def get_public_proposal(pid: str):
+async def get_public_proposal(pid: str, request: Request):
     doc = await db.proposals.find_one({"id": pid, "deleted": {"$ne": True}}, {"_id": 0})
     if not doc:
         raise HTTPException(status_code=404, detail="Proposta não encontrada")
         
+    client_ip = request.client.host if request.client else ""
+    x_forwarded_for = request.headers.get("x-forwarded-for")
+    if x_forwarded_for:
+        client_ip = x_forwarded_for.split(",")[0].strip()
+        
+    user_agent = request.headers.get("user-agent", "")
+    now = datetime.now(timezone.utc).isoformat()
+    
+    await db.proposals.update_one(
+        {"id": pid},
+        {"$set": {
+            "proposal_viewed_at": now,
+            "proposal_viewed_ip": client_ip,
+            "proposal_viewed_ua": user_agent,
+            "updated_at": now
+        }}
+    )
+    
+    doc["proposal_viewed_at"] = now
+    doc["proposal_viewed_ip"] = client_ip
+    doc["proposal_viewed_ua"] = user_agent
+    
+    company_id = doc.get("company_id")
+    company = None
+    if company_id:
+        company = await db.companies.find_one({"id": company_id}, {"_id": 0})
+        
+    return {
+        "proposal": normalize_proposal(doc),
+        "company": company or {}
+    }
+
+
+@api_router.get("/public/proposals/code/{code}")
+async def get_public_proposal_by_code(code: str, request: Request):
+    code_upper = code.upper().strip()
+    doc = await db.proposals.find_one({"public_code": code_upper, "deleted": {"$ne": True}}, {"_id": 0})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Proposta não encontrada")
+        
+    client_ip = request.client.host if request.client else ""
+    x_forwarded_for = request.headers.get("x-forwarded-for")
+    if x_forwarded_for:
+        client_ip = x_forwarded_for.split(",")[0].strip()
+        
+    user_agent = request.headers.get("user-agent", "")
+    now = datetime.now(timezone.utc).isoformat()
+    
+    await db.proposals.update_one(
+        {"id": doc["id"]},
+        {"$set": {
+            "proposal_viewed_at": now,
+            "proposal_viewed_ip": client_ip,
+            "proposal_viewed_ua": user_agent,
+            "updated_at": now
+        }}
+    )
+    
+    doc["proposal_viewed_at"] = now
+    doc["proposal_viewed_ip"] = client_ip
+    doc["proposal_viewed_ua"] = user_agent
+    
     company_id = doc.get("company_id")
     company = None
     if company_id:

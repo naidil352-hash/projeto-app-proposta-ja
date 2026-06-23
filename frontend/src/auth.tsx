@@ -1,7 +1,20 @@
 import React, { createContext, useContext, useEffect, useState } from "react";
 import { api, saveToken, clearToken, loadToken, formatApiError } from "./api";
 
-type User = { id: string; email: string; name: string; role: string };
+type User = {
+  id: string;
+  email: string;
+  name: string;
+  role: string;
+  is_pro?: boolean;
+  trial_is_expired?: boolean;
+  trial_days_remaining?: number | null;
+  trial_stats?: {
+    proposals_count: number;
+    clients_count: number;
+    negotiations_count: number;
+  };
+};
 
 type AuthCtx = {
   user: User | null | undefined;
@@ -25,7 +38,16 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
       try {
         const { data } = await api.get("/auth/me");
-        setUser({ id: data.id, email: data.email, name: data.name, role: data.role });
+        setUser({
+          id: data.id,
+          email: data.email,
+          name: data.name,
+          role: data.role,
+          is_pro: data.is_pro,
+          trial_is_expired: data.trial_is_expired,
+          trial_days_remaining: data.trial_days_remaining,
+          trial_stats: data.trial_stats,
+        });
       } catch (e) {
         console.log("AUTH LOAD ERROR:", e);
         await clearToken();
@@ -44,7 +66,16 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
       await saveToken(res.data.token);
       const meRes = await api.get("/auth/me");
-      setUser({ id: meRes.data.id, email: meRes.data.email, name: meRes.data.name, role: meRes.data.role });
+      setUser({
+        id: meRes.data.id,
+        email: meRes.data.email,
+        name: meRes.data.name,
+        role: meRes.data.role,
+        is_pro: meRes.data.is_pro,
+        trial_is_expired: meRes.data.trial_is_expired,
+        trial_days_remaining: meRes.data.trial_days_remaining,
+        trial_stats: meRes.data.trial_stats,
+      });
 
     } catch (e: any) {
       console.log("LOGIN ERROR:", e);
@@ -75,7 +106,16 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
       await saveToken(res.data.token);
       const meRes = await api.get("/auth/me");
-      setUser({ id: meRes.data.id, email: meRes.data.email, name: meRes.data.name, role: meRes.data.role });
+      setUser({
+        id: meRes.data.id,
+        email: meRes.data.email,
+        name: meRes.data.name,
+        role: meRes.data.role,
+        is_pro: meRes.data.is_pro,
+        trial_is_expired: meRes.data.trial_is_expired,
+        trial_days_remaining: meRes.data.trial_days_remaining,
+        trial_stats: meRes.data.trial_stats,
+      });
 
     } catch (e: any) {
       console.log("REGISTER ERROR:", e);

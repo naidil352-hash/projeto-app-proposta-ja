@@ -794,6 +794,37 @@ export default function Profile() {
     );
   };
 
+  const renderTrialProgress = () => {
+    if (!user || user.trial_days_remaining === null || user.trial_days_remaining === undefined) {
+      return null;
+    }
+
+    const days = user.trial_days_remaining;
+    const totalDays = 60;
+    const progress = Math.max(0, Math.min(1, days / totalDays));
+
+    let barColor = "#22C55E"; // Green
+    if (days < 10) {
+      barColor = "#EF4444"; // Red
+    } else if (days < 20) {
+      barColor = "#EAB308"; // Yellow
+    }
+
+    return (
+      <View style={s.trialCard} testID="trial-progress-card">
+        <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+          <Text style={s.trialTitle}>Período de Teste</Text>
+          <Text style={s.trialDaysText}>
+            {user.trial_is_expired ? "Expirado" : `${days} ${days === 1 ? "dia restante" : "dias restantes"}`}
+          </Text>
+        </View>
+        <View style={s.progressBarBackground}>
+          <View style={[s.progressBarFill, { width: `${progress * 100}%`, backgroundColor: barColor }]} />
+        </View>
+      </View>
+    );
+  };
+
   const renderDesktop = () => (
     <ScrollView
       contentContainerStyle={s.desktopScroll}
@@ -904,6 +935,7 @@ export default function Profile() {
           </View>
 
           <View style={s.desktopRight}>
+            {renderTrialProgress()}
             <View style={s.panelCard}>
               <Text style={s.sectionTitle}>Logo</Text>
               <TouchableOpacity
@@ -1153,6 +1185,7 @@ export default function Profile() {
 
             {activeTab === "empresa" ? (
               <>
+                {renderTrialProgress()}
                 {/* PREMIUM CARD */}
 
                 <View
@@ -2430,5 +2463,28 @@ const s = StyleSheet.create({
     fontSize: 14,
     fontWeight: "700",
     color: "#fff",
+  },
+  trialCard: {
+    backgroundColor: "#F8FAFC",
+    borderWidth: 1,
+    borderColor: "#E2E8F0",
+    padding: 16,
+    borderRadius: 16,
+    marginBottom: 16,
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.05,
+    shadowRadius: 2,
+    elevation: 1,
+  },
+  trialTitle: {
+    fontSize: 14,
+    fontWeight: "700",
+    color: "#1E293B",
+  },
+  trialDaysText: {
+    fontSize: 13,
+    fontWeight: "600",
+    color: "#64748B",
   },
 });

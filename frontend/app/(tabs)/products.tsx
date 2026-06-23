@@ -19,6 +19,7 @@ import { useFocusEffect } from "expo-router";
 
 import { api } from "../../src/api";
 import { theme, formatCurrency } from "../../src/theme";
+import { useAuth } from "../../src/auth";
 
 type Product = {
   id: string;
@@ -30,6 +31,7 @@ type Product = {
 };
 
 export default function Products() {
+  const { user } = useAuth();
   const { width } = useWindowDimensions();
   const isDesktop = width >= 1024;
 
@@ -112,6 +114,14 @@ export default function Products() {
   };
 
   const saveProduct = async () => {
+    if (!editingId && user?.trial_is_expired) {
+      Alert.alert(
+        "Período de avaliação terminado",
+        `Seu período de avaliação terminou.\n\nVocê já gerou:\n* ${user.trial_stats?.proposals_count ?? 0} propostas\n* ${user.trial_stats?.clients_count ?? 0} clientes\n* ${user.trial_stats?.negotiations_count ?? 0} negociações\n\nAssine o Plano Pro para continuar utilizando.`
+      );
+      return;
+    }
+
     if (!code.trim() || !name.trim() || !price.trim()) {
       Alert.alert("Atenção", "Código, nome e preço são obrigatórios.");
       return;
@@ -143,8 +153,15 @@ export default function Products() {
       setEditingId(null);
 
       await load();
-    } catch (e) {
-      Alert.alert("Erro", "Falha ao salvar produto");
+    } catch (e: any) {
+      if (e?.response?.status === 403) {
+        Alert.alert(
+          "Período de avaliação terminado",
+          e.response.data?.detail || "Seu período de avaliação terminou. Assine o Plano Pro para continuar utilizando."
+        );
+      } else {
+        Alert.alert("Erro", "Falha ao salvar produto");
+      }
     } finally {
       setSaving(false);
     }

@@ -46,6 +46,39 @@ import {
 import UpgradeModal from "../../src/UpgradeModal";
 import { useAuth } from "../../src/auth";
 
+const formatTimeAgo = (dateStr?: string) => {
+  if (!dateStr) return "";
+  try {
+    const past = new Date(dateStr);
+    const now = new Date();
+    const diffMs = now.getTime() - past.getTime();
+    const diffMins = Math.floor(diffMs / 60000);
+    if (diffMins < 1) return "agora mesmo";
+    if (diffMins < 60) return `há ${diffMins} ${diffMins === 1 ? "minuto" : "minutos"}`;
+    const diffHours = Math.floor(diffMins / 60);
+    if (diffHours < 24) return `há ${diffHours} ${diffHours === 1 ? "hora" : "horas"}`;
+    const diffDays = Math.floor(diffHours / 24);
+    return `há ${diffDays} ${diffDays === 1 ? "dia" : "dias"}`;
+  } catch {
+    return "";
+  }
+};
+
+const formatDateTime = (dateStr?: string) => {
+  if (!dateStr) return "";
+  try {
+    const d = new Date(dateStr);
+    const day = String(d.getDate()).padStart(2, '0');
+    const month = String(d.getMonth() + 1).padStart(2, '0');
+    const year = d.getFullYear();
+    const hours = String(d.getHours()).padStart(2, '0');
+    const minutes = String(d.getMinutes()).padStart(2, '0');
+    return `${day}/${month}/${year} às ${hours}:${minutes}`;
+  } catch {
+    return "";
+  }
+};
+
 export default function ProposalDetail() {
   const { id } =
     useLocalSearchParams<{
@@ -257,6 +290,13 @@ setP(prop.data);
 
   const onDuplicate =
     async () => {
+      if (user?.trial_is_expired) {
+        Alert.alert(
+          "Período de avaliação terminado",
+          `Seu período de avaliação terminou.\n\nVocê já gerou:\n* ${user.trial_stats?.proposals_count ?? 0} propostas\n* ${user.trial_stats?.clients_count ?? 0} clientes\n* ${user.trial_stats?.negotiations_count ?? 0} negociações\n\nAssine o Plano Pro para continuar utilizando.`
+        );
+        return;
+      }
       try {
         setBusy(true);
 
@@ -280,6 +320,14 @@ setP(prop.data);
 
           setUpgradeOpen(
             true
+          );
+        } else if (
+          e?.response?.status ===
+          403
+        ) {
+          Alert.alert(
+            "Período de avaliação terminado",
+            e.response.data?.detail || "Seu período de avaliação terminou. Assine o Plano Pro para continuar utilizando."
           );
         } else {
           Alert.alert(
@@ -443,6 +491,38 @@ setP(prop.data);
             {st.label}
           </Text>
         </View>
+
+        {p.proposal_viewed_at ? (
+          <View style={s.viewedStatusRow}>
+            <Text style={s.viewedStatusText}>
+              ✓ Visualizada em {formatDateTime(p.proposal_viewed_at)}
+            </Text>
+          </View>
+        ) : null}
+
+        {p.status === "aberto" && p.proposal_viewed_at ? (
+          <View style={s.viewedCard}>
+            <View style={{ flexDirection: "row", alignItems: "center", gap: 10 }}>
+              <Ionicons name="eye-outline" size={24} color={theme.colors.primary} />
+              <View style={{ flex: 1 }}>
+                <Text style={{ fontSize: 15, fontWeight: "700", color: theme.colors.text }}>
+                  Cliente visualizou a proposta.
+                </Text>
+                <Text style={{ fontSize: 13, color: theme.colors.textSec }}>
+                  Cliente visualizou {formatTimeAgo(p.proposal_viewed_at)}.
+                </Text>
+              </View>
+            </View>
+            <TouchableOpacity
+              style={s.viewedBtn}
+              onPress={onFollowUp}
+              testID="btn-viewed-whatsapp"
+            >
+              <Ionicons name="logo-whatsapp" size={16} color="#fff" />
+              <Text style={s.viewedBtnText}>Enviar WhatsApp</Text>
+            </TouchableOpacity>
+          </View>
+        ) : null}
 
         {stale && (
           <View
@@ -1518,5 +1598,45 @@ const s = StyleSheet.create({
     color: "#fff",
     fontSize: 10,
     fontWeight: "700",
+  },
+  viewedCard: {
+    backgroundColor: "#F0FDF4",
+    borderWidth: 1,
+    borderColor: "#BBF7D0",
+    padding: 16,
+    borderRadius: 16,
+    gap: 12,
+  },
+  viewedText: {
+    color: theme.colors.text,
+    fontSize: 13,
+    flex: 1,
+  },
+  viewedBtn: {
+    backgroundColor: "#25D366",
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    paddingVertical: 10,
+    paddingHorizontal: 16,
+    borderRadius: 10,
+    gap: 8,
+    alignSelf: "flex-start",
+  },
+  viewedBtnText: {
+    color: "#fff",
+    fontWeight: "700",
+    fontSize: 13,
+  },
+  viewedStatusRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    marginTop: 4,
+  },
+  viewedStatusText: {
+    fontSize: 12,
+    fontWeight: "600",
+    color: theme.colors.success,
   },
 });

@@ -20,6 +20,7 @@ import * as ImagePicker from "expo-image-picker";
 import { useRouter, useLocalSearchParams } from "expo-router";
 
 import { api, formatApiError } from "../../src/api";
+import { useAuth } from "../../src/auth";
 import { theme, formatCurrency } from "../../src/theme";
 import {
   maskDocument,
@@ -54,6 +55,7 @@ type CatalogProduct = {
 
 export default function NewProposal() {
   const router = useRouter();
+  const { user } = useAuth();
   const { width } = useWindowDimensions();
   const isDesktop = width >= 1024;
 
@@ -501,7 +503,15 @@ export default function NewProposal() {
   const total = Math.max(subtotal - discountNum, 0);
 
   const submit = async () => {
-	  console.log("SUBMIT EXECUTOU");
+    console.log("SUBMIT EXECUTOU");
+    if (!isEditing && user?.trial_is_expired) {
+      Alert.alert(
+        "Período de avaliação terminado",
+        `Seu período de avaliação terminou.\n\nVocê já gerou:\n* ${user.trial_stats?.proposals_count ?? 0} propostas\n* ${user.trial_stats?.clients_count ?? 0} clientes\n* ${user.trial_stats?.negotiations_count ?? 0} negociações\n\nAssine o Plano Pro para continuar utilizando.`
+      );
+      return;
+    }
+
     if (!clientName || !doc || !phone || !deadline) {
       Alert.alert("Atenção", "Preencha cliente, CNPJ/CPF, telefone e prazo.");
       return;
@@ -530,7 +540,7 @@ export default function NewProposal() {
 
     try {
       setSaving(true);
-	  console.log("PRODUTOS", cleanProducts);
+      console.log("PRODUTOS", cleanProducts);
       const payload = {
         client_name: clientName.trim(),
         client_document: doc.trim(),
@@ -543,8 +553,8 @@ export default function NewProposal() {
         images,
         validity_days: parseInt(validity || "15", 10) || 15,
       };
-	  console.log("PAYLOAD", payload);
-            let response;
+      console.log("PAYLOAD", payload);
+      let response;
       if (isEditing && editId) {
         response = await api.put(`/proposals/${editId}`, payload);
       } else {
@@ -557,6 +567,11 @@ export default function NewProposal() {
       if (e?.response?.status === 402) {
         setUpgradeMsg(e.response.data?.detail);
         setUpgradeOpen(true);
+      } else if (e?.response?.status === 403) {
+        Alert.alert(
+          "Período de avaliação terminado",
+          e.response.data?.detail || "Seu período de avaliação terminou. Assine o Plano Pro para continuar utilizando."
+        );
       } else {
         Alert.alert("Erro", formatApiError(e));
       }
