@@ -54,6 +54,7 @@ type Proposal = {
   seller_phone?: string;
   seller_role?: string;
   seller_signature?: string;
+  public_code?: string;
 };
 
 function logoSrc(
@@ -606,6 +607,29 @@ function proposalHtml(
       `
           : ""
       }
+
+      <div class="section" style="margin-top:30px;page-break-inside:avoid;">
+        <h2>ACEITE DIGITAL</h2>
+        <div class="card" style="display:flex;align-items:center;justify-content:space-between;gap:20px;border:2px dashed #0284c7;background:#f0f9ff;padding:20px;">
+          <div style="flex:1;font-size:14px;color:#0369a1;line-height:1.6;">
+            <div style="font-weight:800;font-size:16px;margin-bottom:8px;color:#0284c7;text-transform:uppercase;letter-spacing:0.5px;">ACEITE DIGITAL</div>
+            Acesse: <br/>
+            <strong style="font-size:15px;color:#0f172a;">${
+              proposal.public_code
+                ? `https://app.propostaapp.com.br/p/${proposal.public_code}`
+                : `https://app.propostaapp.com.br/accept/${proposal.id}`
+            }</strong> <br/>
+            ou escaneie o QR Code ao lado.
+          </div>
+          <div>
+            <img src="https://api.qrserver.com/v1/create-qr-code/?size=100x100&data=${encodeURIComponent(
+              proposal.public_code
+                ? `https://app.propostaapp.com.br/p/${proposal.public_code}`
+                : `https://app.propostaapp.com.br/accept/${proposal.id}`
+            )}" style="width:100px;height:100px;border:1px solid #e2e8f0;border-radius:6px;background:#fff;" />
+          </div>
+        </div>
+      </div>
 
       <div class="footer">
 

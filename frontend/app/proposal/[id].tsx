@@ -586,13 +586,13 @@ setP(prop.data);
               COMPARTILHAR PROPOSTA
             </Text>
             <Text style={{ fontSize: 13, color: theme.colors.text, marginBottom: 12, fontWeight: "600" }} numberOfLines={1}>
-              {`https://projeto-app-proposta-ja.vercel.app/p/${p.public_code}`}
+              {`https://app.propostaapp.com.br/p/${p.public_code}`}
             </Text>
             <View style={{ flexDirection: "row", gap: 12 }}>
               <TouchableOpacity
                 style={{ flex: 1, height: 40, backgroundColor: theme.colors.primary, borderRadius: 8, alignItems: "center", justifyContent: "center" }}
                 onPress={async () => {
-                  const link = `https://projeto-app-proposta-ja.vercel.app/p/${p.public_code}`;
+                  const link = `https://app.propostaapp.com.br/p/${p.public_code}`;
                   await Clipboard.setStringAsync(link);
                   setCopied(true);
                   setTimeout(() => setCopied(false), 2000);
@@ -606,7 +606,7 @@ setP(prop.data);
               <TouchableOpacity
                 style={{ flex: 1, height: 40, backgroundColor: "#25D366", borderRadius: 8, alignItems: "center", justifyContent: "center", flexDirection: "row", gap: 6 }}
                 onPress={async () => {
-                  const link = `https://projeto-app-proposta-ja.vercel.app/p/${p.public_code}`;
+                  const link = `https://app.propostaapp.com.br/p/${p.public_code}`;
                   const clientPhone = p.client_phone ? p.client_phone.replace(/\D/g, "") : "";
                   const message = `Olá.
 

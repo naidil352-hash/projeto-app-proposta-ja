@@ -1,11 +1,9 @@
 {
   "cleanUrls": true,
   "rewrites": [
-    { "source": "/profile", "destination": "/index.html" },
-    { "source": "/proposals", "destination": "/index.html" },
-    { "source": "/accept/:id", "destination": "/index.html" },
-    { "source": "/proposal/:id", "destination": "/index.html" },
-    { "source": "/p/:code", "destination": "/index.html" },
-    { "source": "/((?!_expo/|assets/|favicon.ico|.*\\.).*)", "destination": "/index.html" }
+    { "source": "/accept/:id", "destination": "/accept/%5Bid%5D" },
+    { "source": "/proposal/:id", "destination": "/proposal/%5Bid%5D" },
+    { "source": "/p/:code", "destination": "/p/%5Bcode%5D" },
+    { "source": "/:path*", "destination": "/index.html" }
   ]
 }
