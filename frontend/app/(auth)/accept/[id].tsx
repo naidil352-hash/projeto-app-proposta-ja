@@ -111,16 +111,16 @@ export default function PublicAccept() {
 
     try {
       setBusy(true);
-      await api.post(`/proposals/${id}/accept`, {
+      const { data } = await api.post(`/proposals/${id}/accept`, {
         name: name.trim(),
         document: document.trim(),
         role: role.trim(),
         accepted,
       });
+      setP(data);
       Alert.alert(
         "Sucesso",
-        accepted ? "Proposta aceita com sucesso!" : "Proposta recusada.",
-        [{ text: "OK", onPress: () => load() }]
+        accepted ? "Proposta aceita com sucesso!" : "Proposta recusada."
       );
     } catch (e) {
       Alert.alert("Erro", formatApiError(e));
@@ -262,18 +262,42 @@ export default function PublicAccept() {
         {isFinalized ? (
           <View style={[s.card, p.acceptance_status === "accepted" ? s.acceptedCard : s.rejectedCard]}>
             <View style={s.rowAlign}>
-              <Text style={[s.statusTitle, { color: p.acceptance_status === "accepted" ? theme.colors.success : theme.colors.danger }]}>
-                {p.acceptance_status === "accepted" ? "✅ Proposta aceita." : "❌ Proposta recusada."}
+              <Text style={[s.statusTitle, { color: p.acceptance_status === "accepted" ? theme.colors.success : theme.colors.danger, marginBottom: 4 }]} testID="status-title">
+                {p.acceptance_status === "accepted" ? "✅ Proposta aceita com sucesso." : "❌ Proposta recusada."}
               </Text>
             </View>
-            <View style={s.evidenceBox}>
-              <Text style={s.evidenceText}><Text style={{ fontWeight: "700" }}>Assinado por:</Text> {p.accept_name || "-"}</Text>
-              <Text style={s.evidenceText}><Text style={{ fontWeight: "700" }}>Documento:</Text> {p.accept_document || "-"}</Text>
-              <Text style={s.evidenceText}><Text style={{ fontWeight: "700" }}>Cargo:</Text> {p.accept_role || "-"}</Text>
-              <Text style={s.evidenceText}><Text style={{ fontWeight: "700" }}>Data/Hora:</Text> {formatDate(p.accept_date || "")}</Text>
-              <Text style={s.evidenceText}><Text style={{ fontWeight: "700" }}>IP de registro:</Text> {p.accept_ip || "-"}</Text>
-              <Text style={s.evidenceText}><Text style={{ fontWeight: "700" }}>Dispositivo:</Text> {p.accept_device || "-"}</Text>
-            </View>
+            {p.acceptance_status === "accepted" ? (
+              <Text style={{ fontSize: 14, color: theme.colors.textSec, marginBottom: 4 }}>
+                Obrigado pela confiança.
+              </Text>
+            ) : null}
+            <Text style={{ fontSize: 14, color: theme.colors.textSec, marginBottom: 12 }}>
+              Seu consultor comercial foi notificado.
+            </Text>
+            {p.acceptance_status === "accepted" ? (
+              <View style={s.evidenceBox} testID="evidence-box">
+                <Text style={s.evidenceText}><Text style={{ fontWeight: "700" }}>Assinado por:</Text> {p.accept_name || "-"}</Text>
+                <Text style={s.evidenceText}><Text style={{ fontWeight: "700" }}>Documento:</Text> {p.accept_document || "-"}</Text>
+                <Text style={s.evidenceText}><Text style={{ fontWeight: "700" }}>Cargo:</Text> {p.accept_role || "-"}</Text>
+                <Text style={s.evidenceText}><Text style={{ fontWeight: "700" }}>Data/Hora:</Text> {formatDate(p.accept_date || "")}</Text>
+                <Text style={s.evidenceText}><Text style={{ fontWeight: "700" }}>IP de registro:</Text> {p.accept_ip || "-"}</Text>
+                <Text style={s.evidenceText}><Text style={{ fontWeight: "700" }}>Dispositivo:</Text> {p.accept_device || "-"}</Text>
+              </View>
+            ) : null}
+            {p.seller_whatsapp ? (
+              <TouchableOpacity
+                style={[s.whatsappBtn, { marginTop: 16, width: "100%", alignSelf: "stretch" }]}
+                onPress={() => {
+                  const cleaned = p.seller_whatsapp!.replace(/\D/g, "");
+                  const phoneWithCountry = cleaned.startsWith("55") ? cleaned : `55${cleaned}`;
+                  Linking.openURL(`https://wa.me/${phoneWithCountry}`);
+                }}
+                testID="btn-finalized-whatsapp"
+              >
+                <Ionicons name="logo-whatsapp" size={16} color="#fff" />
+                <Text style={s.whatsappBtnText}>FALAR COM CONSULTOR</Text>
+              </TouchableOpacity>
+            ) : null}
           </View>
         ) : (
           /* Form de Aceite */
