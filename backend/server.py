@@ -595,6 +595,11 @@ def normalize_proposal(p: dict) -> dict:
     p["accept_date"] = p.get("accept_date") or ""
     p["accept_ip"] = p.get("accept_ip") or ""
     p["accept_device"] = p.get("accept_device") or ""
+    # Sprint 6 fields
+    p["timeline"] = p.get("timeline") or []
+    p["next_action_date"] = p.get("next_action_date") or None
+    p["next_action_description"] = p.get("next_action_description") or ""
+    p["temperature"] = p.get("temperature") or "morna"
     return p
 
 
@@ -698,6 +703,24 @@ class CatalogProductOut(BaseModel):
     created_at: str
 
 
+class TimelineEntry(BaseModel):
+    id: str
+    type: str
+    description: str
+    created_at: str
+    created_by: str
+    next_action_date: Optional[str] = None
+    next_action_description: Optional[str] = ""
+
+
+class TimelineInput(BaseModel):
+    type: str
+    description: str
+    next_action_date: Optional[str] = None
+    next_action_description: Optional[str] = ""
+    temperature: Optional[str] = None
+
+
 ProposalStatus = Literal["aberto", "qualificado", "negociacao", "aprovado", "perdido", "realizado"]
 
 
@@ -712,6 +735,8 @@ class ProposalIn(BaseModel):
     payment_terms: Optional[str] = ""
     validity_days: Optional[int] = 15
     images: Optional[List[str]] = []
+    temperature: Optional[str] = "morna"
+
 
 
 class StatusUpdate(BaseModel):
@@ -1372,7 +1397,30 @@ async def create_proposal(data: ProposalIn, user=Depends(get_current_user)):
         "created_at": now,
         "updated_at": now,
         "last_reminded_at": None,
-        "deleted": False
+        "deleted": False,
+        "temperature": data.temperature or "morna",
+        "next_action_date": None,
+        "next_action_description": "",
+        "timeline": [
+            {
+                "id": str(uuid.uuid4()),
+                "type": "created",
+                "description": "Proposta criada.",
+                "created_at": now,
+                "created_by": user["id"],
+                "next_action_date": None,
+                "next_action_description": ""
+            },
+            {
+                "id": str(uuid.uuid4()),
+                "type": "sent",
+                "description": "📤 Proposta enviada.",
+                "created_at": now,
+                "created_by": user["id"],
+                "next_action_date": None,
+                "next_action_description": ""
+            }
+        ]
     }
     await db.proposals.insert_one(doc)
     doc.pop("_id", None)
@@ -1857,7 +1905,24 @@ async def accept_proposal(pid: str, data: AcceptIn, request: Request):
         update["lost_reason"] = "Recusado pelo cliente no aceite digital"
         update["status_updated_at"] = now
         
-    await db.proposals.update_one({"id": pid}, {"$set": update})
+    timeline_event = {
+        "id": str(uuid.uuid4()),
+        "type": "accepted" if data.accepted else "rejected",
+        "description": "✅ Cliente aceitou." if data.accepted else "❌ Cliente recusou.",
+        "created_at": now,
+        "created_by": "client",
+        "next_action_date": None,
+        "next_action_description": ""
+    }
+    await db.proposals.update_one(
+        {"id": pid},
+        {
+            "$set": update,
+            "$push": {
+                "timeline": timeline_event
+            }
+        }
+    )
     updated_doc = await db.proposals.find_one({"id": pid}, {"_id": 0})
     
     await log_audit(
@@ -1907,6 +1972,117 @@ async def reopen_proposal(pid: str, user=Depends(get_current_user)):
     return normalize_proposal(updated_doc)
 
 
+@api_router.post("/proposals/{pid}/timeline")
+async def add_timeline_event(pid: str, data: TimelineInput, user=Depends(get_current_user)):
+    role = user.get("role", "owner")
+    company_id = user.get("company_id")
+    
+    # Check access
+    q = {"id": pid, "deleted": {"$ne": True}}
+    if role == "seller":
+        q["user_id"] = user["id"]
+    else:
+        if company_id:
+            q["company_id"] = company_id
+            
+    doc = await db.proposals.find_one(q)
+    if not doc:
+        raise HTTPException(status_code=404, detail="Proposta não encontrada")
+        
+    # Check trial expiration
+    await verify_trial_not_expired(user["company_id"], user["id"])
+    
+    # Validate manually allowed types
+    allowed_types = ["call", "whatsapp", "visit", "meeting", "negotiation", "note"]
+    if data.type not in allowed_types:
+        raise HTTPException(status_code=400, detail=f"Tipo de interação inválido. Permitidos: {', '.join(allowed_types)}")
+        
+    now = datetime.now(timezone.utc).isoformat()
+    
+    timeline_event = {
+        "id": str(uuid.uuid4()),
+        "type": data.type,
+        "description": data.description.strip(),
+        "created_at": now,
+        "created_by": user.get("name") or user["id"],
+        "next_action_date": data.next_action_date or None,
+        "next_action_description": data.next_action_description or ""
+    }
+    
+    update_ops = {
+        "$push": {"timeline": timeline_event},
+        "$set": {"updated_at": now}
+    }
+    
+    # Update next action on root level (can be set to None if cleared)
+    update_ops["$set"]["next_action_date"] = data.next_action_date or None
+    update_ops["$set"]["next_action_description"] = data.next_action_description or ""
+        
+    # If temperature is specified and valid, update it
+    if data.temperature:
+        if data.temperature not in ["fria", "morna", "quente"]:
+            raise HTTPException(status_code=400, detail="Temperatura inválida. Permitidos: fria, morna, quente")
+        update_ops["$set"]["temperature"] = data.temperature
+        
+    await db.proposals.update_one({"id": pid}, update_ops)
+    updated_doc = await db.proposals.find_one({"id": pid}, {"_id": 0})
+    
+    await log_audit(
+        action="add_timeline",
+        entity_type="proposal",
+        entity_id=pid,
+        old_value=doc,
+        new_value=updated_doc,
+        user_id=user["id"],
+        company_id=user.get("company_id")
+    )
+    
+    return normalize_proposal(updated_doc)
+
+
+@api_router.patch("/proposals/{pid}/temperature")
+async def update_opportunity_temperature(pid: str, data: dict, user=Depends(get_current_user)):
+    role = user.get("role", "owner")
+    company_id = user.get("company_id")
+    
+    temperature = data.get("temperature")
+    if not temperature or temperature not in ["fria", "morna", "quente"]:
+        raise HTTPException(status_code=400, detail="Temperatura inválida. Permitidos: fria, morna, quente")
+        
+    # Check access
+    q = {"id": pid, "deleted": {"$ne": True}}
+    if role == "seller":
+        q["user_id"] = user["id"]
+    else:
+        if company_id:
+            q["company_id"] = company_id
+            
+    doc = await db.proposals.find_one(q)
+    if not doc:
+        raise HTTPException(status_code=404, detail="Proposta não encontrada")
+        
+    now = datetime.now(timezone.utc).isoformat()
+    await db.proposals.update_one(
+        {"id": pid},
+        {"$set": {"temperature": temperature, "updated_at": now}}
+    )
+    
+    updated_doc = await db.proposals.find_one({"id": pid}, {"_id": 0})
+    
+    await log_audit(
+        action="update_temperature",
+        entity_type="proposal",
+        entity_id=pid,
+        old_value=doc,
+        new_value=updated_doc,
+        user_id=user["id"],
+        company_id=user.get("company_id")
+    )
+    
+    return normalize_proposal(updated_doc)
+
+
+
 @api_router.get("/public/proposals/{pid}")
 async def get_public_proposal(pid: str, request: Request):
     doc = await db.proposals.find_one({"id": pid, "deleted": {"$ne": True}}, {"_id": 0})
@@ -1921,19 +2097,36 @@ async def get_public_proposal(pid: str, request: Request):
     user_agent = request.headers.get("user-agent", "")
     now = datetime.now(timezone.utc).isoformat()
     
+    new_event = {
+        "id": str(uuid.uuid4()),
+        "type": "viewed",
+        "description": "👁 Cliente visualizou.",
+        "created_at": now,
+        "created_by": "client",
+        "next_action_date": None,
+        "next_action_description": ""
+    }
     await db.proposals.update_one(
         {"id": pid},
-        {"$set": {
-            "proposal_viewed_at": now,
-            "proposal_viewed_ip": client_ip,
-            "proposal_viewed_ua": user_agent,
-            "updated_at": now
-        }}
+        {
+            "$set": {
+                "proposal_viewed_at": now,
+                "proposal_viewed_ip": client_ip,
+                "proposal_viewed_ua": user_agent,
+                "updated_at": now
+            },
+            "$push": {
+                "timeline": new_event
+            }
+        }
     )
     
     doc["proposal_viewed_at"] = now
     doc["proposal_viewed_ip"] = client_ip
     doc["proposal_viewed_ua"] = user_agent
+    if "timeline" not in doc or doc["timeline"] is None:
+        doc["timeline"] = []
+    doc["timeline"].append(new_event)
     
     company_id = doc.get("company_id")
     company = None
@@ -1961,19 +2154,36 @@ async def get_public_proposal_by_code(code: str, request: Request):
     user_agent = request.headers.get("user-agent", "")
     now = datetime.now(timezone.utc).isoformat()
     
+    new_event = {
+        "id": str(uuid.uuid4()),
+        "type": "viewed",
+        "description": "👁 Cliente visualizou.",
+        "created_at": now,
+        "created_by": "client",
+        "next_action_date": None,
+        "next_action_description": ""
+    }
     await db.proposals.update_one(
         {"id": doc["id"]},
-        {"$set": {
-            "proposal_viewed_at": now,
-            "proposal_viewed_ip": client_ip,
-            "proposal_viewed_ua": user_agent,
-            "updated_at": now
-        }}
+        {
+            "$set": {
+                "proposal_viewed_at": now,
+                "proposal_viewed_ip": client_ip,
+                "proposal_viewed_ua": user_agent,
+                "updated_at": now
+            },
+            "$push": {
+                "timeline": new_event
+            }
+        }
     )
     
     doc["proposal_viewed_at"] = now
     doc["proposal_viewed_ip"] = client_ip
     doc["proposal_viewed_ua"] = user_agent
+    if "timeline" not in doc or doc["timeline"] is None:
+        doc["timeline"] = []
+    doc["timeline"].append(new_event)
     
     company_id = doc.get("company_id")
     company = None
@@ -2050,7 +2260,7 @@ async def get_stats(user=Depends(get_current_user)):
     stale_count = 0
     for p in items:
         try:
-            created = datetime.fromisoformat(p["created_at"])
+            created = datetime.fromisoformat(p["created_at"].replace("Z", "+00:00"))
         except Exception:
             continue
         val = p.get("grand_total", p.get("total", 0.0))
@@ -2061,7 +2271,95 @@ async def get_stats(user=Depends(get_current_user)):
         if p["status"] in ("realizado", "aprovado") and created >= month_start:
             month_won_value += val
 
-    # BLOCO 3 fields
+    # Helper to parse dates robustly
+    def parse_dt(dt_str):
+        if not dt_str:
+            return None
+        try:
+            return datetime.fromisoformat(str(dt_str).replace("Z", "+00:00"))
+        except Exception:
+            pass
+        for fmt in ("%d/%m/%Y %H:%M", "%d/%m/%Y", "%Y-%m-%d %H:%M", "%Y-%m-%d"):
+            try:
+                return datetime.strptime(str(dt_str).strip(), fmt)
+            except Exception:
+                pass
+        return None
+
+    # Calculate Sprint 6 metrics
+    br_now = now - timedelta(hours=3)
+    br_today = br_now.date()
+    
+    followup_count = 0
+    overdue_count = 0
+    viewed_today_count = 0
+    waiting_count = 0
+    
+    for p in items:
+        # 1. Need follow-up (open/active & last interaction > 3 days)
+        if p["status"] in ("aberto", "qualificado", "negociacao"):
+            created_str = p.get("created_at")
+            last_dt = parse_dt(created_str)
+            if last_dt:
+                timeline = p.get("timeline") or []
+                for t in timeline:
+                    t_created = t.get("created_at")
+                    if t_created:
+                        t_dt = parse_dt(t_created)
+                        if t_dt and t_dt > last_dt:
+                            last_dt = t_dt
+                if (now - last_dt).days >= 3:
+                    followup_count += 1
+                    
+        # 2. Overdue (open/active & next_action_date < today)
+        if p["status"] in ("aberto", "qualificado", "negociacao"):
+            next_act = p.get("next_action_date")
+            if next_act:
+                dt = parse_dt(next_act)
+                if dt:
+                    br_dt = dt - timedelta(hours=3) if dt.tzinfo else dt
+                    if br_dt.date() < br_today:
+                        overdue_count += 1
+                        
+        # 3. Viewed today (proposal_viewed_at is today)
+        viewed_str = p.get("proposal_viewed_at")
+        if viewed_str:
+            v_dt = parse_dt(viewed_str)
+            if v_dt:
+                v_br = v_dt - timedelta(hours=3)
+                if v_br.date() == br_today:
+                    viewed_today_count += 1
+                    
+        # 4. Waiting return (open/active & last timeline event type is waiting)
+        if p["status"] in ("aberto", "qualificado", "negociacao"):
+            timeline = p.get("timeline") or []
+            if timeline:
+                try:
+                    sorted_timeline = sorted(timeline, key=lambda x: x.get("created_at", ""))
+                    if sorted_timeline and sorted_timeline[-1].get("type") == "waiting":
+                        waiting_count += 1
+                except Exception:
+                    pass
+
+    # Dashboard Gestão (Conversão por usuário / Gestão por usuário)
+    users_stats = []
+    if role == "owner" and company_id:
+        company_users = await db.users.find({"company_id": company_id, "deleted": {"$ne": True}}).to_list(1000)
+        for u in company_users:
+            u_proposals = [p for p in items if p.get("user_id") == u["id"]]
+            u_enviadas = len(u_proposals)
+            u_visualizadas = sum(1 for p in u_proposals if p.get("proposal_viewed_at"))
+            u_aceitas = sum(1 for p in u_proposals if p.get("status") in ("realizado", "aprovado"))
+            u_conversion = round((u_aceitas / u_enviadas * 100), 2) if u_enviadas > 0 else 0.0
+            users_stats.append({
+                "user_id": u["id"],
+                "name": u.get("name") or u["email"],
+                "enviadas": u_enviadas,
+                "visualizadas": u_visualizadas,
+                "aceitas": u_aceitas,
+                "conversao": u_conversion
+            })
+
     total_proposals = len(items)
     approved_proposals = total_won
     pending_proposals = total_open
@@ -2069,7 +2367,6 @@ async def get_stats(user=Depends(get_current_user)):
     conversion_rate = round((approved_proposals / total_proposals * 100), 2) if total_proposals > 0 else 0.0
     total_revenue = sum(p.get("grand_total", p.get("total", 0.0)) for p in items if p["status"] in ("realizado", "aprovado"))
 
-    # BLOCO 8 fields
     if company_id:
         clients_count = await db.clients.count_documents({"company_id": company_id, "deleted": {"$ne": True}})
     else:
@@ -2084,7 +2381,7 @@ async def get_stats(user=Depends(get_current_user)):
         if not created_str:
             continue
         try:
-            created_dt = datetime.fromisoformat(created_str)
+            created_dt = datetime.fromisoformat(created_str.replace("Z", "+00:00"))
         except Exception:
             continue
             
@@ -2120,6 +2417,12 @@ async def get_stats(user=Depends(get_current_user)):
         "open_value": round(open_value, 2),
         "month_won_value": round(month_won_value, 2),
         "stale_count": stale_count,
+        # Sprint 6 fields
+        "followup_count": followup_count,
+        "overdue_count": overdue_count,
+        "viewed_today_count": viewed_today_count,
+        "waiting_count": waiting_count,
+        "users_stats": users_stats,
         # New stats fields
         "total_proposals": total_proposals,
         "approved_proposals": approved_proposals,

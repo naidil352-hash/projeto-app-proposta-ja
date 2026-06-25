@@ -81,6 +81,21 @@ const formatDateTime = (dateStr?: string) => {
   }
 };
 
+const formatTimelineDate = (dateStr?: string) => {
+  if (!dateStr) return "";
+  try {
+    const d = new Date(dateStr);
+    const day = String(d.getDate()).padStart(2, '0');
+    const month = String(d.getMonth() + 1).padStart(2, '0');
+    const hours = String(d.getHours()).padStart(2, '0');
+    const minutes = String(d.getMinutes()).padStart(2, '0');
+    return `${day}/${month} ${hours}:${minutes}`;
+  } catch {
+    return "";
+  }
+};
+
+
 export default function ProposalDetail() {
   const { id } =
     useLocalSearchParams<{
@@ -89,7 +104,7 @@ export default function ProposalDetail() {
 
   const router = useRouter();
   const { user } = useAuth();
-
+  
   const [p, setP] =
     useState<any>(null);
 
@@ -118,6 +133,14 @@ export default function ProposalDetail() {
   const [upgradeMsg, setUpgradeMsg] =
     useState<string | undefined>();
 
+  // Sprint 6 state variables
+  const [timelineModal, setTimelineModal] = useState(false);
+  const [interactionType, setInteractionType] = useState("call");
+  const [interactionDesc, setInteractionDesc] = useState("");
+  const [interactionNextDate, setInteractionNextDate] = useState("");
+  const [interactionNextDesc, setInteractionNextDesc] = useState("");
+  const [interactionTemp, setInteractionTemp] = useState("morna");
+
   const safeBack = () => {
     try {
       if (
@@ -143,18 +166,19 @@ export default function ProposalDetail() {
         setLoading(true);
 
         const [prop, comp] = await Promise.all([
-  api.get(`/proposals/${id}`),
-  api.get("/company"),
-]);
+          api.get(`/proposals/${id}`),
+          api.get("/company"),
+        ]);
 
-console.log(
-  "PROPOSTA API",
-  JSON.stringify(prop.data, null, 2)
-);
+        console.log(
+          "PROPOSTA API",
+          JSON.stringify(prop.data, null, 2)
+        );
 
-setP(prop.data);
+        setP(prop.data);
+        setInteractionTemp(prop.data.temperature || "morna");
 
-		console.log("PROPOSTA COMPLETA", prop.data);
+        console.log("PROPOSTA COMPLETA", prop.data);
 
         setCompany(comp.data);
       } catch (e) {
@@ -580,6 +604,51 @@ setP(prop.data);
           </Text>
         </View>
 
+        <View style={s.card}>
+          <Text style={s.sectionLabel}>Temperatura da Oportunidade</Text>
+          <View style={{ flexDirection: "row", gap: 10, marginTop: 8 }}>
+            {(["fria", "morna", "quente"] as const).map((temp) => {
+              const isActive = (p.temperature || "morna") === temp;
+              const colors = {
+                fria: { bg: "#EFF6FF", border: "#3B82F6", text: "#1D4ED8" },
+                morna: { bg: "#FFF7ED", border: "#F97316", text: "#C2410C" },
+                quente: { bg: "#FEF2F2", border: "#EF4444", text: "#B91C1C" },
+              }[temp];
+              return (
+                <TouchableOpacity
+                  key={temp}
+                  style={{
+                    flex: 1,
+                    paddingVertical: 8,
+                    borderRadius: 8,
+                    borderWidth: 2,
+                    borderColor: isActive ? colors.border : "#E2E8F0",
+                    backgroundColor: isActive ? colors.bg : "#fff",
+                    alignItems: "center",
+                    justifyContent: "center",
+                  }}
+                  onPress={async () => {
+                    try {
+                      setBusy(true);
+                      await api.patch(`/proposals/${p.id}/temperature`, { temperature: temp });
+                      await load();
+                    } catch (err) {
+                      Alert.alert("Erro", formatApiError(err));
+                    } finally {
+                      setBusy(false);
+                    }
+                  }}
+                  testID={`temp-btn-${temp}`}
+                >
+                  <Text style={{ fontSize: 13, fontWeight: "700", color: isActive ? colors.text : "#64748B", textTransform: "capitalize" }}>
+                    {temp === "fria" ? "❄️ Fria" : temp === "morna" ? "⚡ Morna" : "🔥 Quente"}
+                  </Text>
+                </TouchableOpacity>
+              );
+            })}
+          </View>
+        </View>
+
         {p.status === "aberto" && (
           <View style={s.card} testID="share-proposal-card">
             <Text style={{ fontSize: 14, fontWeight: "800", color: theme.colors.textSec, marginBottom: 8, letterSpacing: 0.5 }}>
@@ -834,6 +903,110 @@ ${p.seller_name || ""}`;
             </Text>
           </View>
         ) : null}
+
+        {/* Card TIMELINE COMERCIAL */}
+        <View style={s.card} testID="timeline-comercial-section">
+          <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+            <Text style={s.sectionLabel}>TIMELINE COMERCIAL</Text>
+            <TouchableOpacity
+              style={{
+                flexDirection: "row",
+                alignItems: "center",
+                backgroundColor: theme.colors.primary,
+                paddingHorizontal: 12,
+                paddingVertical: 6,
+                borderRadius: 6,
+                gap: 4
+              }}
+              onPress={() => setTimelineModal(true)}
+              testID="btn-new-interaction"
+            >
+              <Ionicons name="add" size={14} color="#fff" />
+              <Text style={{ color: "#fff", fontWeight: "700", fontSize: 12 }}>NOVA INTERAÇÃO</Text>
+            </TouchableOpacity>
+          </View>
+
+          {(!p.timeline || p.timeline.length === 0) ? (
+            <Text style={{ fontSize: 13, color: theme.colors.textMuted, textAlign: "center", marginVertical: 12 }}>
+              Nenhuma interação registrada.
+            </Text>
+          ) : (
+            <View style={{ gap: 16, marginTop: 8 }}>
+              {p.timeline.map((item: any, idx: number) => {
+                const getEventIcon = (type: string) => {
+                  switch (type) {
+                    case "created": return { name: "add-circle-outline", color: "#10B981" };
+                    case "sent": return { name: "paper-plane-outline", color: "#3B82F6" };
+                    case "viewed": return { name: "eye-outline", color: "#8B5CF6" };
+                    case "call": return { name: "call-outline", color: "#0EA5E9" };
+                    case "whatsapp": return { name: "logo-whatsapp", color: "#25D366" };
+                    case "visit": return { name: "location-outline", color: "#F59E0B" };
+                    case "meeting": return { name: "people-outline", color: "#6366F1" };
+                    case "negotiation": return { name: "chatbubbles-outline", color: "#D97706" };
+                    case "discount": return { name: "pricetag-outline", color: "#EC4899" };
+                    case "waiting": return { name: "time-outline", color: "#64748B" };
+                    case "note": return { name: "document-text-outline", color: "#475569" };
+                    case "accepted": return { name: "checkmark-circle-outline", color: "#10B981" };
+                    case "rejected": return { name: "close-circle-outline", color: "#EF4444" };
+                    default: return { name: "ellipse-outline", color: "#64748B" };
+                  }
+                };
+                const icon = getEventIcon(item.type);
+                return (
+                  <View key={item.id || idx} style={{ flexDirection: "row", gap: 12 }}>
+                    <View style={{ alignItems: "center" }}>
+                      <View style={{ width: 28, height: 28, borderRadius: 14, backgroundColor: `${icon.color}15`, alignItems: "center", justifyContent: "center" }}>
+                        <Ionicons name={icon.name as any} size={16} color={icon.color} />
+                      </View>
+                      {idx < p.timeline.length - 1 && (
+                        <View style={{ width: 2, flex: 1, backgroundColor: "#E2E8F0", marginTop: 4, minHeight: 20 }} />
+                      )}
+                    </View>
+                    <View style={{ flex: 1, paddingTop: 2 }}>
+                      <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 2 }}>
+                        <Text style={{ fontSize: 11, fontWeight: "600", color: theme.colors.textMuted }}>
+                          {formatTimelineDate(item.created_at)}
+                        </Text>
+                        {item.created_by ? (
+                          <Text style={{ fontSize: 10, color: theme.colors.textMuted, backgroundColor: "#F1F5F9", paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4 }}>
+                            {item.created_by}
+                          </Text>
+                        ) : null}
+                      </View>
+                      <Text style={{ fontSize: 14, fontWeight: "600", color: theme.colors.text }}>
+                        {item.description}
+                      </Text>
+                      {item.next_action_date ? (
+                        <View style={{ flexDirection: "row", alignItems: "center", gap: 4, marginTop: 4, backgroundColor: "#FFF7ED", paddingHorizontal: 8, paddingVertical: 4, borderRadius: 4, alignSelf: "flex-start", borderWidth: 1, borderColor: "#FFEDD5" }}>
+                          <Ionicons name="alarm-outline" size={12} color="#D97706" />
+                          <Text style={{ fontSize: 11, fontWeight: "600", color: "#C2410C" }}>
+                            Próxima ação: {formatTimelineDate(item.next_action_date)} - {item.next_action_description || ""}
+                          </Text>
+                        </View>
+                      ) : null}
+                    </View>
+                  </View>
+                );
+              })}
+            </View>
+          )}
+
+          {p.next_action_date ? (
+            <View style={{ marginTop: 16, padding: 12, backgroundColor: "#FFF7ED", borderRadius: 8, borderWidth: 1, borderColor: "#FFEDD5", gap: 4 }} testID="next-action-card">
+              <Text style={{ fontSize: 11, fontWeight: "700", color: "#C2410C", letterSpacing: 0.5, textTransform: "uppercase" }}>
+                PRÓXIMA AÇÃO AGENDADA
+              </Text>
+              <Text style={{ fontSize: 14, fontWeight: "700", color: theme.colors.text }}>
+                {formatTimelineDate(p.next_action_date)}
+              </Text>
+              {p.next_action_description ? (
+                <Text style={{ fontSize: 13, color: theme.colors.textSec }}>
+                  {p.next_action_description}
+                </Text>
+              ) : null}
+            </View>
+          ) : null}
+        </View>
 
         <Text style={s.created}>
           Criado em{" "}
@@ -1109,6 +1282,167 @@ ${p.seller_name || ""}`;
           )
         }
       />
+
+      {/* Modal Nova Interação */}
+      <Modal
+        visible={timelineModal}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setTimelineModal(false)}
+      >
+        <KeyboardAvoidingView
+          style={s.modalRoot}
+          behavior={Platform.OS === "ios" ? "padding" : undefined}
+        >
+          <View style={s.modalCard} testID="timeline-modal">
+            <Text style={s.modalTitle}>Registrar Nova Interação</Text>
+            
+            {/* Seleção de Tipo */}
+            <Text style={{ fontSize: 13, fontWeight: "600", color: theme.colors.textSec, marginBottom: 8 }}>
+              Tipo de Interação *
+            </Text>
+            <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8, marginBottom: 12 }}>
+              {[
+                { type: "call", label: "📞 Ligação" },
+                { type: "whatsapp", label: "💬 WhatsApp" },
+                { type: "visit", label: "📍 Visita" },
+                { type: "meeting", label: "👥 Reunião" },
+                { type: "negotiation", label: "🤝 Negociação" },
+                { type: "note", label: "📝 Observação" },
+              ].map((item) => (
+                <TouchableOpacity
+                  key={item.type}
+                  style={{
+                    paddingHorizontal: 12,
+                    paddingVertical: 6,
+                    borderRadius: 20,
+                    borderWidth: 1,
+                    borderColor: interactionType === item.type ? theme.colors.primary : "#E2E8F0",
+                    backgroundColor: interactionType === item.type ? `${theme.colors.primary}10` : "#fff",
+                  }}
+                  onPress={() => setInteractionType(item.type)}
+                  testID={`interaction-type-${item.type}`}
+                >
+                  <Text style={{ fontSize: 12, fontWeight: "600", color: interactionType === item.type ? theme.colors.primary : "#64748B" }}>
+                    {item.label}
+                  </Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+
+            {/* Descrição */}
+            <Text style={{ fontSize: 13, fontWeight: "600", color: theme.colors.textSec, marginBottom: 6 }}>
+              Descrição *
+            </Text>
+            <TextInput
+              testID="interaction-desc-input"
+              style={[s.modalInput, { height: 60 }]}
+              value={interactionDesc}
+              onChangeText={setInteractionDesc}
+              placeholder="Ex: Cliente pediu para enviar tabela de preços..."
+              placeholderTextColor={theme.colors.textMuted}
+              multiline
+            />
+
+            {/* Temperatura */}
+            <Text style={{ fontSize: 13, fontWeight: "600", color: theme.colors.textSec, marginTop: 10, marginBottom: 6 }}>
+              Temperatura da Oportunidade
+            </Text>
+            <View style={{ flexDirection: "row", gap: 8, marginBottom: 12 }}>
+              {(["fria", "morna", "quente"] as const).map((temp) => (
+                <TouchableOpacity
+                  key={temp}
+                  style={{
+                    flex: 1,
+                    paddingVertical: 6,
+                    borderRadius: 6,
+                    borderWidth: 1,
+                    borderColor: interactionTemp === temp ? theme.colors.text : "#E2E8F0",
+                    backgroundColor: interactionTemp === temp ? "#F8FAFC" : "#fff",
+                    alignItems: "center",
+                  }}
+                  onPress={() => setInteractionTemp(temp)}
+                  testID={`interaction-temp-${temp}`}
+                >
+                  <Text style={{ fontSize: 12, fontWeight: "600", color: interactionTemp === temp ? temp === "fria" ? "#1D4ED8" : temp === "morna" ? "#C2410C" : "#B91C1C" : "#64748B" }}>
+                    {temp === "fria" ? "❄️ Fria" : temp === "morna" ? "⚡ Morna" : "🔥 Quente"}
+                  </Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+
+            {/* Próxima Ação */}
+            <Text style={{ fontSize: 13, fontWeight: "600", color: theme.colors.textSec, marginTop: 6, marginBottom: 4 }}>
+              Agendar próxima ação? (Opcional)
+            </Text>
+            <View style={{ gap: 8, marginBottom: 12 }}>
+              <TextInput
+                testID="interaction-next-date-input"
+                style={s.modalInput}
+                value={interactionNextDate}
+                onChangeText={setInteractionNextDate}
+                placeholder="Data/Hora. Ex: DD/MM/YYYY HH:MM ou YYYY-MM-DD"
+                placeholderTextColor={theme.colors.textMuted}
+              />
+              <TextInput
+                testID="interaction-next-desc-input"
+                style={s.modalInput}
+                value={interactionNextDesc}
+                onChangeText={setInteractionNextDesc}
+                placeholder="Descrição da ação. Ex: Ligar para cobrar retorno..."
+                placeholderTextColor={theme.colors.textMuted}
+              />
+            </View>
+
+            {/* Botões */}
+            <View style={{ flexDirection: "row", gap: 8, marginTop: 16 }}>
+              <TouchableOpacity
+                style={s.modalCancel}
+                onPress={() => {
+                  setTimelineModal(false);
+                  setInteractionDesc("");
+                  setInteractionNextDate("");
+                  setInteractionNextDesc("");
+                }}
+              >
+                <Text style={{ color: theme.colors.text, fontWeight: "700" }}>Cancelar</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                testID="btn-submit-interaction"
+                style={[
+                  s.modalConfirm,
+                  (!interactionDesc.trim() || busy) && { opacity: 0.5 },
+                ]}
+                disabled={!interactionDesc.trim() || busy}
+                onPress={async () => {
+                  try {
+                    setBusy(true);
+                    await api.post(`/proposals/${p.id}/timeline`, {
+                      type: interactionType,
+                      description: interactionDesc.trim(),
+                      next_action_date: interactionNextDate.trim() || null,
+                      next_action_description: interactionNextDesc.trim() || "",
+                      temperature: interactionTemp,
+                    });
+                    setTimelineModal(false);
+                    setInteractionDesc("");
+                    setInteractionNextDate("");
+                    setInteractionNextDesc("");
+                    await load();
+                  } catch (err) {
+                    Alert.alert("Erro", formatApiError(err));
+                  } finally {
+                    setBusy(false);
+                  }
+                }}
+              >
+                {busy ? <ActivityIndicator color="#fff" /> : <Text style={{ color: "#fff", fontWeight: "700" }}>Salvar</Text>}
+              </TouchableOpacity>
+            </View>
+          </View>
+        </KeyboardAvoidingView>
+      </Modal>
     </SafeAreaView>
   );
 }

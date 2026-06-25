@@ -54,6 +54,11 @@ type Stats = {
   acceptance_rate?: number;
   is_trial?: boolean;
   trial_days_remaining?: number | null;
+  followup_count?: number;
+  overdue_count?: number;
+  viewed_today_count?: number;
+  waiting_count?: number;
+  users_stats?: any[];
 };
 
 export default function Dashboard() {
@@ -196,134 +201,82 @@ export default function Dashboard() {
         <MetricCard
           testID="card-open"
           icon="time-outline"
-          label="Abertos"
+          label="Abertas"
           value={String(stats?.open_count ?? 0)}
-          sub={formatCurrency(stats?.open_value || 0)}
+          sub="propostas"
           accent={theme.colors.statusOpenText}
         />
-
-        <MetricCard
-          testID="card-won"
-          icon="checkmark-circle-outline"
-          label="Realizados"
-          value={String(stats?.won_count ?? 0)}
-          sub="propostas"
-          accent={theme.colors.primary}
-        />
-
-        <MetricCard
-          testID="card-lost"
-          icon="close-circle-outline"
-          label="Perdidos"
-          value={String(stats?.lost_count ?? 0)}
-          sub="total"
-          accent={theme.colors.statusLostText}
-        />
-
         <MetricCard
           testID="card-followup"
           icon="alert-circle-outline"
-          label="Follow-up"
-          value={String(stats?.stale_count ?? 0)}
-          sub="pendentes"
+          label="Precisam follow-up"
+          value={String(stats?.followup_count ?? 0)}
+          sub="> 3 dias sem ação"
           accent={theme.colors.warn}
+        />
+        <MetricCard
+          testID="card-overdue"
+          icon="calendar-outline"
+          label="Atrasadas"
+          value={String(stats?.overdue_count ?? 0)}
+          sub="ação agendada < hoje"
+          accent={theme.colors.danger}
+        />
+        <MetricCard
+          testID="card-viewed-today"
+          icon="eye-outline"
+          label="Visualizadas hoje"
+          value={String(stats?.viewed_today_count ?? 0)}
+          sub="acessos hoje"
+          accent="#8B5CF6"
         />
       </View>
 
-      <Text style={s.sectionTitle}>Inteligência Comercial</Text>
-
       <View style={s.kpiRow}>
         <MetricCard
-          testID="card-revenue"
-          icon="cash-outline"
-          label="Receita Total"
-          value={formatCurrency(stats?.total_revenue || 0)}
-          sub="aprovado"
-          accent={theme.colors.success}
-        />
-        <MetricCard
-          testID="card-ticket"
-          icon="calculator-outline"
-          label="Ticket Médio"
-          value={formatCurrency(stats?.ticket_average || 0)}
-          sub="por proposta"
-          accent={theme.colors.accent}
+          testID="card-waiting"
+          icon="hourglass-outline"
+          label="Aguardando retorno"
+          value={String(stats?.waiting_count ?? 0)}
+          sub="último evento waiting"
+          accent="#64748B"
         />
         <MetricCard
           testID="card-conversion"
           icon="trending-up-outline"
-          label="Conversão"
+          label={user?.role === "owner" ? "Conversão Geral" : "Minha Conversão"}
           value={`${stats?.conversion_rate ?? 0}%`}
           sub="taxa de fechamento"
-          accent="#6D28D9"
-        />
-        <MetricCard
-          testID="card-active-clients"
-          icon="people-outline"
-          label="Clientes Ativos"
-          value={String(stats?.clients_active ?? 0)}
-          sub="últimos 90 dias"
-          accent={theme.colors.primary}
-        />
-      </View>
-
-      <View style={s.kpiRow}>
-        <MetricCard
-          testID="card-negotiation"
-          icon="chatbubbles-outline"
-          label="Em Negociação"
-          value={String(stats?.negotiation_count ?? 0)}
-          sub="propostas"
-          accent={theme.colors.warn}
-        />
-        <MetricCard
-          testID="card-inactive-clients"
-          icon="people-outline"
-          label="Clientes Inativos"
-          value={String(stats?.clients_lost ?? 0)}
-          sub="há 180+ dias"
-          accent={theme.colors.danger}
+          accent="#10B981"
         />
         <View style={{ flex: 1, minWidth: 200 }} />
         <View style={{ flex: 1, minWidth: 200 }} />
       </View>
 
-      <Text style={s.sectionTitle}>Aceite Comercial (Digital)</Text>
-
-      <View style={s.kpiRow}>
-        <MetricCard
-          testID="card-acceptance-sent"
-          icon="paper-plane-outline"
-          label="Enviadas"
-          value={String(totalProposals)}
-          sub="propostas"
-          accent="#0284c7"
-        />
-        <MetricCard
-          testID="card-acceptance-viewed"
-          icon="eye-outline"
-          label="Visualizadas"
-          value={String(viewedProposals)}
-          sub="visualizadas"
-          accent="#f59e0b"
-        />
-        <MetricCard
-          testID="card-acceptance-accepted"
-          icon="checkmark-done-circle-outline"
-          label="Aceitas"
-          value={String(acceptedProposals)}
-          sub="aceitas"
-          accent={theme.colors.success}
-        />
-        <MetricCard
-          testID="card-acceptance-rate"
-          icon="trending-up-outline"
-          label="Conversão"
-          value={`${conversionRate}%`}
-          sub="conversão"
-          accent="#6D28D9"
-        />
-      </View>
+      {/* Dashboard Gestão para Desktop */}
+      {user?.role === "owner" && stats?.users_stats && stats.users_stats.length > 0 && (
+        <View style={s.card} testID="dashboard-gestao-section">
+          <Text style={s.sectionTitle}>Dashboard Gestão</Text>
+          <View style={{ marginTop: 12 }}>
+            <View style={{ flexDirection: "row", borderBottomWidth: 1, borderBottomColor: "#CBD5E1", paddingVertical: 8, backgroundColor: "#F8FAFC" }}>
+              <Text style={{ flex: 2, fontWeight: "700", fontSize: 13, color: "#475569" }}>Usuário</Text>
+              <Text style={{ flex: 1, fontWeight: "700", fontSize: 13, color: "#475569", textAlign: "center" }}>Enviadas</Text>
+              <Text style={{ flex: 1, fontWeight: "700", fontSize: 13, color: "#475569", textAlign: "center" }}>Visualizadas</Text>
+              <Text style={{ flex: 1, fontWeight: "700", fontSize: 13, color: "#475569", textAlign: "center" }}>Aceitas</Text>
+              <Text style={{ flex: 1.2, fontWeight: "700", fontSize: 13, color: "#475569", textAlign: "right" }}>Conversão</Text>
+            </View>
+            {stats.users_stats.map((u: any, idx: number) => (
+              <View key={u.user_id || idx} style={{ flexDirection: "row", borderBottomWidth: 1, borderBottomColor: "#E2E8F0", paddingVertical: 10, alignItems: "center" }} testID={`user-row-${idx}`}>
+                <Text style={{ flex: 2, fontSize: 13, fontWeight: "600", color: theme.colors.text }}>{u.name}</Text>
+                <Text style={{ flex: 1, fontSize: 13, color: theme.colors.text, textAlign: "center" }}>{u.enviadas}</Text>
+                <Text style={{ flex: 1, fontSize: 13, color: theme.colors.text, textAlign: "center" }}>{u.visualizadas}</Text>
+                <Text style={{ flex: 1, fontSize: 13, color: theme.colors.text, textAlign: "center" }}>{u.aceitas}</Text>
+                <Text style={{ flex: 1.2, fontSize: 13, fontWeight: "700", color: "#10B981", textAlign: "right" }}>{u.conversao}%</Text>
+              </View>
+            ))}
+          </View>
+        </View>
+      )}
 
       <View style={s.analyticsRow}>
         <TouchableOpacity
@@ -782,120 +735,85 @@ export default function Dashboard() {
             <MetricCard
               testID="card-open"
               icon="time-outline"
-              label="Abertos"
+              label="Abertas"
               value={String(stats?.open_count ?? 0)}
-              sub={formatCurrency(stats?.open_value || 0)}
+              sub="propostas"
               accent={theme.colors.statusOpenText}
             />
-
             <MetricCard
-              testID="card-lost"
-              icon="close-circle-outline"
-              label="Perdidos"
-              value={String(stats?.lost_count ?? 0)}
-              sub="total"
-              accent={theme.colors.statusLostText}
-            />
-          </View>
-
-          <Text style={s.sectionTitle}>Inteligência Comercial</Text>
-
-          <View style={s.gridRow}>
-            <MetricCard
-              testID="card-revenue"
-              icon="cash-outline"
-              label="Receita Total"
-              value={formatCurrency(stats?.total_revenue || 0)}
-              sub="aprovado"
-              accent={theme.colors.success}
-            />
-            <MetricCard
-              testID="card-ticket"
-              icon="calculator-outline"
-              label="Ticket Médio"
-              value={formatCurrency(stats?.ticket_average || 0)}
-              sub="por proposta"
-              accent={theme.colors.accent}
+              testID="card-followup"
+              icon="alert-circle-outline"
+              label="Precisam follow-up"
+              value={String(stats?.followup_count ?? 0)}
+              sub="> 3 dias sem ação"
+              accent={theme.colors.warn}
             />
           </View>
 
           <View style={s.gridRow}>
+            <MetricCard
+              testID="card-overdue"
+              icon="calendar-outline"
+              label="Atrasadas"
+              value={String(stats?.overdue_count ?? 0)}
+              sub="ação agendada < hoje"
+              accent={theme.colors.danger}
+            />
+            <MetricCard
+              testID="card-viewed-today"
+              icon="eye-outline"
+              label="Visualizadas hoje"
+              value={String(stats?.viewed_today_count ?? 0)}
+              sub="acessos hoje"
+              accent="#8B5CF6"
+            />
+          </View>
+
+          <View style={s.gridRow}>
+            <MetricCard
+              testID="card-waiting"
+              icon="hourglass-outline"
+              label="Aguardando retorno"
+              value={String(stats?.waiting_count ?? 0)}
+              sub="último evento waiting"
+              accent="#64748B"
+            />
             <MetricCard
               testID="card-conversion"
               icon="trending-up-outline"
-              label="Conversão"
+              label={user?.role === "owner" ? "Conversão Geral" : "Minha Conversão"}
               value={`${stats?.conversion_rate ?? 0}%`}
               sub="taxa de fechamento"
-              accent="#6D28D9"
-            />
-            <MetricCard
-              testID="card-active-clients"
-              icon="people-outline"
-              label="Clientes Ativos"
-              value={String(stats?.clients_active ?? 0)}
-              sub="últimos 90 dias"
-              accent={theme.colors.primary}
+              accent="#10B981"
             />
           </View>
 
-          <View style={s.gridRow}>
-            <MetricCard
-              testID="card-negotiation"
-              icon="chatbubbles-outline"
-              label="Em Negociação"
-              value={String(stats?.negotiation_count ?? 0)}
-              sub="propostas"
-              accent={theme.colors.warn}
-            />
-            <MetricCard
-              testID="card-inactive-clients"
-              icon="people-outline"
-              label="Clientes Inativos"
-              value={String(stats?.clients_lost ?? 0)}
-              sub="há 180+ dias"
-              accent={theme.colors.danger}
-            />
-          </View>
-
-          <Text style={s.sectionTitle}>Aceite Comercial (Digital)</Text>
-
-          <View style={s.gridRow}>
-            <MetricCard
-              testID="card-acceptance-sent"
-              icon="paper-plane-outline"
-              label="Enviadas"
-              value={String(totalProposals)}
-              sub="propostas"
-              accent="#0284c7"
-            />
-            <MetricCard
-              testID="card-acceptance-viewed"
-              icon="eye-outline"
-              label="Visualizadas"
-              value={String(viewedProposals)}
-              sub="visualizadas"
-              accent="#f59e0b"
-            />
-          </View>
-
-          <View style={s.gridRow}>
-            <MetricCard
-              testID="card-acceptance-accepted"
-              icon="checkmark-done-circle-outline"
-              label="Aceitas"
-              value={String(acceptedProposals)}
-              sub="aceitas"
-              accent={theme.colors.success}
-            />
-            <MetricCard
-              testID="card-acceptance-rate"
-              icon="trending-up-outline"
-              label="Conversão"
-              value={`${conversionRate}%`}
-              sub="conversão"
-              accent="#6D28D9"
-            />
-          </View>
+          {/* Dashboard Gestão para Celular */}
+          {user?.role === "owner" && stats?.users_stats && stats.users_stats.length > 0 && (
+            <View style={s.card} testID="dashboard-gestao-section">
+              <Text style={s.sectionTitle}>Dashboard Gestão</Text>
+              <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginTop: 8 }}>
+                <View style={{ minWidth: 500 }}>
+                  <View style={{ flexDirection: "row", borderBottomWidth: 1, borderBottomColor: "#CBD5E1", paddingVertical: 8, backgroundColor: "#F8FAFC" }}>
+                    <Text style={{ flex: 2, fontWeight: "700", fontSize: 13, color: "#475569" }}>Usuário</Text>
+                    <Text style={{ flex: 1, fontWeight: "700", fontSize: 13, color: "#475569", textAlign: "center" }}>Enviadas</Text>
+                    <Text style={{ flex: 1, fontWeight: "700", fontSize: 13, color: "#475569", textAlign: "center" }}>Visualizadas</Text>
+                    <Text style={{ flex: 1, fontWeight: "700", fontSize: 13, color: "#475569", textAlign: "center" }}>Aceitas</Text>
+                    <Text style={{ flex: 1.2, fontWeight: "700", fontSize: 13, color: "#475569", textAlign: "right" }}>Conversão</Text>
+                  </View>
+                  {stats.users_stats.map((u: any, idx: number) => (
+                    <View key={u.user_id || idx} style={{ flexDirection: "row", borderBottomWidth: 1, borderBottomColor: "#E2E8F0", paddingVertical: 10, alignItems: "center" }} testID={`user-row-${idx}`}>
+                      <Text style={{ flex: 2, fontSize: 13, fontWeight: "600", color: theme.colors.text }}>{u.name}</Text>
+                      <Text style={{ flex: 1, fontSize: 13, color: theme.colors.text, textAlign: "center" }}>{u.enviadas}</Text>
+                      <Text style={{ flex: 1, fontSize: 13, color: theme.colors.text, textAlign: "center" }}>{u.visualizadas}</Text>
+                      <Text style={{ flex: 1, fontSize: 13, color: theme.colors.text, textAlign: "center" }}>{u.aceitas}</Text>
+                      <Text style={{ flex: 1.2, fontSize: 13, fontWeight: "700", color: "#10B981", textAlign: "right" }}>{u.conversao}%</Text>
+                    </View>
+                  ))}
+                </View>
+              </ScrollView>
+            </View>
+          )}
 
           <View style={s.analyticsRow}>
             <TouchableOpacity
@@ -1521,5 +1439,13 @@ const s = StyleSheet.create({
     flexDirection: "row",
     gap: 12,
     width: "100%",
+  },
+  card: {
+    backgroundColor: "#fff",
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    borderRadius: 20,
+    padding: 18,
+    marginTop: 20,
   },
 });
