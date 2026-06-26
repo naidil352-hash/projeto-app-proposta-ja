@@ -14,10 +14,12 @@ function Gate({ children }: { children: React.ReactNode }) {
 
   React.useEffect(() => {
     if (user === undefined) return;
-    const inAuth = segments[0] === "(auth)";
-    if (!user && !inAuth) {
+    const segs = segments as string[];
+    const inAuth = segs[0] === "(auth)";
+    const isPublic = segs[0] === "p" || (segs[0] === "(auth)" && segs[1] === "accept");
+    if (!user && !inAuth && !isPublic) {
       router.replace("/(auth)/login");
-    } else if (user && inAuth) {
+    } else if (user && inAuth && segs[1] !== "accept") {
       router.replace("/(tabs)");
     }
   }, [user, segments]);

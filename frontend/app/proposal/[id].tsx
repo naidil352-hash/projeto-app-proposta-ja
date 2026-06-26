@@ -389,37 +389,38 @@ export default function ProposalDetail() {
       Alert.alert("Atenção", "Esta proposta já foi aceita e não pode ser excluída.");
       return;
     }
-    Alert.alert(
-      "Excluir proposta",
-      "Tem certeza?",
-      [
-        {
-          text: "Cancelar",
-          style: "cancel",
-        },
-        {
-          text: "Excluir",
-          style: "destructive",
+    
+    const executeDelete = async () => {
+      try {
+        await api.delete(`/proposals/${id}`);
+        router.replace("/(tabs)/proposals");
+      } catch (e) {
+        Alert.alert("Erro", formatApiError(e));
+      }
+    };
 
-          onPress: async () => {
-            try {
-              await api.delete(
-                `/proposals/${id}`
-              );
-
-              router.replace(
-                "/(tabs)/proposals"
-              );
-            } catch (e) {
-              Alert.alert(
-                "Erro",
-                formatApiError(e)
-              );
-            }
+    if (Platform.OS === "web") {
+      const confirmed = window.confirm("Deseja realmente excluir esta proposta?");
+      if (confirmed) {
+        executeDelete();
+      }
+    } else {
+      Alert.alert(
+        "Excluir proposta",
+        "Tem certeza?",
+        [
+          {
+            text: "Cancelar",
+            style: "cancel",
           },
-        },
-      ]
-    );
+          {
+            text: "Excluir",
+            style: "destructive",
+            onPress: executeDelete,
+          },
+        ]
+      );
+    }
   };
 
   if (loading || !p) {
