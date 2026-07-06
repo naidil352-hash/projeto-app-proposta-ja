@@ -68,21 +68,42 @@ export const statusMeta: Record<string, { label: string; bg: string; text: strin
   },
 };
 
-export function formatCurrency(v: number): string {
+export function formatCurrency(v: number, currency = "BRL"): string {
+  const normCurrency = (currency || "BRL").toUpperCase();
   try {
-    return new Intl.NumberFormat("pt-BR", {
+    let locale = "pt-BR";
+    if (normCurrency === "USD") {
+      locale = "en-US";
+    } else if (normCurrency === "EUR") {
+      locale = "de-DE";
+    } else if (normCurrency === "PYG") {
+      locale = "es-PY";
+    }
+
+    const options: Intl.NumberFormatOptions = {
       style: "currency",
-      currency: "BRL",
-    }).format(v || 0);
+      currency: normCurrency,
+    };
+
+    if (normCurrency === "PYG") {
+      options.minimumFractionDigits = 0;
+      options.maximumFractionDigits = 0;
+    }
+
+    return new Intl.NumberFormat(locale, options).format(v || 0);
   } catch {
-    return `R$ ${(v || 0).toFixed(2)}`;
+    const symbol = normCurrency === "USD" ? "$" : normCurrency === "EUR" ? "€" : normCurrency === "PYG" ? "Gs" : "R$";
+    const decimals = normCurrency === "PYG" ? 0 : 2;
+    return `${symbol} ${(v || 0).toFixed(decimals)}`;
   }
 }
 
-export function formatDate(iso?: string | null): string {
+export function formatDate(iso?: string | null, currency = "BRL"): string {
   if (!iso) return "-";
   const d = new Date(iso);
-  return d.toLocaleDateString("pt-BR");
+  const normCurrency = (currency || "BRL").toUpperCase();
+  const locale = normCurrency === "USD" ? "en-US" : "pt-BR";
+  return d.toLocaleDateString(locale);
 }
 
 export function daysSince(iso?: string | null): number {

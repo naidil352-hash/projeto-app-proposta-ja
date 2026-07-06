@@ -43,33 +43,20 @@ export function maskCurrency(v: string): string {
   return `${intFmt},${dec}`;
 }
 
-export function formatCurrencyFromBackend(v: string | number): string {
-  if (v === null || v === undefined || v === "") return "";
+import {
+  parseCurrency as centralParseCurrency,
+  formatCurrencyFromBackend as centralFormatCurrencyFromBackend,
+  parseNumber as centralParseNumber
+} from "./utils/currency";
 
-  const clean = String(v)
-    .replace(/\./g, "")
-    .replace(",", ".");
-
-  const n = parseFloat(clean);
-  if (!Number.isFinite(n)) return "";
-
-  return n.toLocaleString("pt-BR", {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  });
+export function formatCurrencyFromBackend(v: string | number | null | undefined): string {
+  return centralFormatCurrencyFromBackend(v);
 }
 
-export function parseCurrency(v: string): number {
-  if (!v) return 0;
-  // Accept both formats
-  const clean = String(v).replace(/\./g, "").replace(",", ".");
-  const n = parseFloat(clean);
-  return Number.isFinite(n) ? n : 0;
+export function parseCurrency(v: string | number | null | undefined): number {
+  return centralParseCurrency(v);
 }
 
-export function parseNumber(v: string): number {
-  if (!v) return 0;
-  const clean = String(v).replace(",", ".");
-  const n = parseFloat(clean);
-  return Number.isFinite(n) ? n : 0;
+export function parseNumber(v: string | number | null | undefined): number {
+  return centralParseNumber(v);
 }

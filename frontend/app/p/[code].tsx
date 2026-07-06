@@ -16,6 +16,7 @@ import { useLocalSearchParams, useRouter } from "expo-router";
 import { api, formatApiError } from "../../src/api";
 import { theme, formatCurrency, formatDate, getRoleLabel } from "../../src/theme";
 import { Ionicons } from "@expo/vector-icons";
+import { t } from "../../src/i18n";
 
 type Proposal = {
   id: string;
@@ -45,6 +46,17 @@ type Proposal = {
   accept_date?: string;
   accept_ip?: string;
   accept_device?: string;
+  shipping_type?: string;
+  shipping_responsible?: string;
+  shipping_company?: string;
+  manufacturing_days?: string;
+  delivery_days?: string;
+  warranty?: string;
+  delivery_place?: string;
+  incoterm?: string;
+  currency?: string;
+  commercial_conditions?: string;
+  internal_notes?: string;
 };
 
 type Company = {
@@ -197,95 +209,125 @@ export default function PublicAcceptByCode() {
 
         {/* Cliente */}
         <View style={s.card}>
-          <Text style={s.sectionTitle}>Cliente</Text>
+          <Text style={s.sectionTitle}>{t("client", p.currency)}</Text>
           <Text style={s.clientName}>{p.client_name}</Text>
           <Text style={s.clientMeta}>CPF/CNPJ: {p.client_document} · Tel: {p.client_phone}</Text>
         </View>
 
         {/* Produtos/Serviços */}
         <View style={s.card}>
-          <Text style={s.sectionTitle}>Itens da Proposta</Text>
+          <Text style={s.sectionTitle}>{t("items", p.currency)}</Text>
           {p.products?.map((item, idx) => (
             <View key={idx} style={s.itemRow}>
               <View style={{ flex: 1 }}>
                 <Text style={s.itemName}>{item.name}</Text>
                 {item.description ? <Text style={s.itemDesc}>{item.description}</Text> : null}
                 <Text style={s.itemQty}>
-                  {item.quantity} {item.unit || "UN"} x {formatCurrency(item.unit_price || item.price || 0)}
+                  {item.quantity} {item.unit || "UN"} x {formatCurrency(item.unit_price || item.price || 0, p.currency)}
                 </Text>
               </View>
               <Text style={s.itemTotal}>
-                {formatCurrency(item.total || ((item.quantity || 0) * (item.unit_price || item.price || 0)))}
+                {formatCurrency(item.total || ((item.quantity || 0) * (item.unit_price || item.price || 0)), p.currency)}
               </Text>
             </View>
           ))}
           <View style={s.divider} />
           <View style={s.summaryRow}>
-            <Text style={s.summaryLabel}>Subtotal</Text>
-            <Text style={s.summaryValue}>{formatCurrency(subtotal)}</Text>
+            <Text style={s.summaryLabel}>{t("subtotal", p.currency)}</Text>
+            <Text style={s.summaryValue}>{formatCurrency(subtotal, p.currency)}</Text>
           </View>
           {p.discount && p.discount > 0 ? (
             <View style={s.summaryRow}>
-              <Text style={s.summaryLabel}>Desconto</Text>
-              <Text style={[s.summaryValue, { color: theme.colors.danger }]}>- {formatCurrency(p.discount)}</Text>
+              <Text style={s.summaryLabel}>{t("discount", p.currency)}</Text>
+              <Text style={[s.summaryValue, { color: theme.colors.danger }]}>- {formatCurrency(p.discount, p.currency)}</Text>
             </View>
           ) : null}
           <View style={[s.summaryRow, s.grandTotalRow]}>
-            <Text style={s.grandTotalLabel}>Total Geral</Text>
-            <Text style={s.grandTotalValue}>{formatCurrency(p.grand_total ?? p.total)}</Text>
+            <Text style={s.grandTotalLabel}>{t("total", p.currency)}</Text>
+            <Text style={s.grandTotalValue}>{formatCurrency(p.grand_total ?? p.total, p.currency)}</Text>
+          </View>
+        </View>
+
+        {/* Condições Comerciais */}
+        <View style={s.card}>
+          <Text style={s.sectionTitle}>{t("commercialConditions", p.currency)}</Text>
+          <View style={{ gap: 8, marginTop: 8 }}>
+            {p.currency ? <Text style={s.clientMeta}>Moeda: <Text style={{ fontWeight: '600', color: theme.colors.text }}>{p.currency}</Text></Text> : null}
+            {p.incoterm ? <Text style={s.clientMeta}>Incoterm: <Text style={{ fontWeight: '600', color: theme.colors.text }}>{p.incoterm}</Text></Text> : null}
+            {p.shipping_type ? <Text style={s.clientMeta}>Frete: <Text style={{ fontWeight: '600', color: theme.colors.text }}>{p.shipping_type}</Text></Text> : null}
+            {p.shipping_responsible ? <Text style={s.clientMeta}>Responsável pelo frete: <Text style={{ fontWeight: '600', color: theme.colors.text }}>{p.shipping_responsible}</Text></Text> : null}
+            {p.shipping_company ? <Text style={s.clientMeta}>Transportadora: <Text style={{ fontWeight: '600', color: theme.colors.text }}>{p.shipping_company}</Text></Text> : null}
+            {p.manufacturing_days ? <Text style={s.clientMeta}>Prazo de fabricação: <Text style={{ fontWeight: '600', color: theme.colors.text }}>{p.manufacturing_days}</Text></Text> : null}
+            {p.delivery_days ? <Text style={s.clientMeta}>Prazo de entrega: <Text style={{ fontWeight: '600', color: theme.colors.text }}>{p.delivery_days}</Text></Text> : null}
+            {p.warranty ? <Text style={s.clientMeta}>Garantia: <Text style={{ fontWeight: '600', color: theme.colors.text }}>{p.warranty}</Text></Text> : null}
+            {p.delivery_place ? <Text style={s.clientMeta}>Local de entrega: <Text style={{ fontWeight: '600', color: theme.colors.text }}>{p.delivery_place}</Text></Text> : null}
+            {p.payment_terms ? <Text style={s.clientMeta}>Condições de pagamento: <Text style={{ fontWeight: '600', color: theme.colors.text }}>{p.payment_terms}</Text></Text> : null}
+            {p.validity_days ? <Text style={s.clientMeta}>Validade da proposta: <Text style={{ fontWeight: '600', color: theme.colors.text }}>{p.validity_days} dias</Text></Text> : null}
+            {p.commercial_conditions ? (
+              <View style={{ marginTop: 4 }}>
+                <Text style={[s.clientMeta, { fontWeight: '700' }]}>Observações Comerciais:</Text>
+                <Text style={s.clientMeta}>{p.commercial_conditions}</Text>
+              </View>
+            ) : null}
+            {p.internal_notes ? (
+              <View style={{ marginTop: 4 }}>
+                <Text style={[s.clientMeta, { fontWeight: '700' }]}>Observações adicionais:</Text>
+                <Text style={s.clientMeta}>{p.internal_notes}</Text>
+              </View>
+            ) : null}
           </View>
         </View>
 
         {/* Consultor Comercial */}
         {p.seller_name ? (
           <View style={s.card}>
-            <Text style={s.sectionTitle}>Consultor Comercial</Text>
+            <Text style={s.sectionTitle}>{t("seller", p.currency)}</Text>
             <Text style={s.sellerName}>{p.seller_name}</Text>
             {p.seller_role ? <Text style={s.sellerMeta}>Cargo: {getRoleLabel(p.seller_role)}</Text> : null}
             {p.seller_phone ? <Text style={s.sellerMeta}>Telefone: {p.seller_phone}</Text> : null}
             {p.seller_email ? <Text style={s.sellerMeta}>E-mail: {p.seller_email}</Text> : null}
-
-            {p.seller_whatsapp ? (
-              <TouchableOpacity
-                style={s.whatsappBtn}
-                onPress={() => {
-                  const cleaned = p.seller_whatsapp!.replace(/\D/g, "");
-                  const phoneWithCountry = cleaned.startsWith("55") ? cleaned : `55${cleaned}`;
-                  Linking.openURL(`https://wa.me/${phoneWithCountry}`);
-                }}
-                testID="btn-whatsapp"
-              >
-                <Ionicons name="logo-whatsapp" size={16} color="#fff" />
-                <Text style={s.whatsappBtnText}>FALAR COM O CONSULTOR</Text>
-              </TouchableOpacity>
-            ) : null}
-          </View>
-        ) : null}
+ 
+             {p.seller_whatsapp ? (
+               <TouchableOpacity
+                 style={s.whatsappBtn}
+                 onPress={() => {
+                   const cleaned = p.seller_whatsapp!.replace(/\D/g, "");
+                   const phoneWithCountry = cleaned.startsWith("55") ? cleaned : `55${cleaned}`;
+                   Linking.openURL(`https://wa.me/${phoneWithCountry}`);
+                 }}
+                 testID="btn-whatsapp"
+               >
+                 <Ionicons name="logo-whatsapp" size={16} color="#fff" />
+                 <Text style={s.whatsappBtnText}>{t("logoWhatsapp", p.currency)}</Text>
+               </TouchableOpacity>
+             ) : null}
+           </View>
+         ) : null}
 
         {/* Status de Aceite Finalizado */}
         {isFinalized ? (
           <View style={[s.card, p.acceptance_status === "accepted" ? s.acceptedCard : s.rejectedCard]}>
             <View style={s.rowAlign}>
               <Text style={[s.statusTitle, { color: p.acceptance_status === "accepted" ? theme.colors.success : theme.colors.danger, marginBottom: 4 }]} testID="status-title">
-                {p.acceptance_status === "accepted" ? "✅ Proposta aceita com sucesso." : "❌ Proposta recusada."}
+                {p.acceptance_status === "accepted" ? `✅ ${t("accepted", p.currency)}` : `❌ ${t("rejected", p.currency)}`}
               </Text>
             </View>
             {p.acceptance_status === "accepted" ? (
               <Text style={{ fontSize: 14, color: theme.colors.textSec, marginBottom: 4 }}>
-                Obrigado pela confiança.
+                {t("fallbackAcceptance", p.currency)}
               </Text>
             ) : null}
             <Text style={{ fontSize: 14, color: theme.colors.textSec, marginBottom: 12 }}>
-              Seu consultor comercial foi notificado.
+              {t("notifiedSeller", p.currency)}
             </Text>
             {p.acceptance_status === "accepted" ? (
               <View style={s.evidenceBox} testID="evidence-box">
-                <Text style={s.evidenceText}><Text style={{ fontWeight: "700" }}>Assinado por:</Text> {p.accept_name || "-"}</Text>
-                <Text style={s.evidenceText}><Text style={{ fontWeight: "700" }}>Documento:</Text> {p.accept_document || "-"}</Text>
-                <Text style={s.evidenceText}><Text style={{ fontWeight: "700" }}>Cargo:</Text> {p.accept_role || "-"}</Text>
-                <Text style={s.evidenceText}><Text style={{ fontWeight: "700" }}>Data/Hora:</Text> {formatDate(p.accept_date || "")}</Text>
-                <Text style={s.evidenceText}><Text style={{ fontWeight: "700" }}>IP de registro:</Text> {p.accept_ip || "-"}</Text>
-                <Text style={s.evidenceText}><Text style={{ fontWeight: "700" }}>Dispositivo:</Text> {p.accept_device || "-"}</Text>
+                <Text style={s.evidenceText}><Text style={{ fontWeight: "700" }}>{t("signature", p.currency)}:</Text> {p.accept_name || "-"}</Text>
+                <Text style={s.evidenceText}><Text style={{ fontWeight: "700" }}>{t("document", p.currency)}:</Text> {p.accept_document || "-"}</Text>
+                <Text style={s.evidenceText}><Text style={{ fontWeight: "700" }}>{t("role", p.currency)}:</Text> {p.accept_role || "-"}</Text>
+                <Text style={s.evidenceText}><Text style={{ fontWeight: "700" }}>{t("date", p.currency)}:</Text> {formatDate(p.accept_date || "")}</Text>
+                <Text style={s.evidenceText}><Text style={{ fontWeight: "700" }}>{t("ip", p.currency)}:</Text> {p.accept_ip || "-"}</Text>
+                <Text style={s.evidenceText}><Text style={{ fontWeight: "700" }}>{t("device", p.currency)}:</Text> {p.accept_device || "-"}</Text>
               </View>
             ) : null}
             {p.seller_whatsapp ? (
@@ -299,7 +341,7 @@ export default function PublicAcceptByCode() {
                 testID="btn-finalized-whatsapp"
               >
                 <Ionicons name="logo-whatsapp" size={16} color="#fff" />
-                <Text style={s.whatsappBtnText}>FALAR COM CONSULTOR</Text>
+                <Text style={s.whatsappBtnText}>{t("logoWhatsapp", p.currency)}</Text>
               </TouchableOpacity>
             ) : null}
           </View>
@@ -307,7 +349,7 @@ export default function PublicAcceptByCode() {
           /* Form de Aceite */
           <View style={s.card} testID="aceite-comercial-section">
             <Text style={s.sectionTitle}>Aceite Comercial</Text>
-            <Text style={s.inputLabel}>Nome completo *</Text>
+            <Text style={s.inputLabel}>{t("name", p.currency)} *</Text>
             <TextInput
               style={s.input}
               placeholder="Ex: João da Silva"
@@ -316,7 +358,7 @@ export default function PublicAcceptByCode() {
               testID="accept-input-name"
             />
 
-            <Text style={s.inputLabel}>CPF/CNPJ *</Text>
+            <Text style={s.inputLabel}>{t("document", p.currency)} *</Text>
             <TextInput
               style={s.input}
               placeholder="Ex: 000.000.000-00"
@@ -325,7 +367,7 @@ export default function PublicAcceptByCode() {
               testID="accept-input-document"
             />
 
-            <Text style={s.inputLabel}>Cargo *</Text>
+            <Text style={s.inputLabel}>{t("role", p.currency)} *</Text>
             <TextInput
               style={s.input}
               placeholder="Ex: Diretor Financeiro"
@@ -344,7 +386,7 @@ export default function PublicAcceptByCode() {
                 size={22}
                 color={termsAccepted ? theme.colors.primary : "#64748B"}
               />
-              <Text style={s.checkboxText}>Li e concordo com os termos desta proposta.</Text>
+              <Text style={s.checkboxText}>{t("terms", p.currency)}</Text>
             </TouchableOpacity>
 
             <View style={s.btnRow}>
@@ -354,7 +396,7 @@ export default function PublicAcceptByCode() {
                 disabled={busy}
                 testID="btn-submit-accept"
               >
-                {busy ? <ActivityIndicator color="#fff" /> : <Text style={s.btnText}>ACEITAR PROPOSTA</Text>}
+                {busy ? <ActivityIndicator color="#fff" /> : <Text style={s.btnText}>{t("accept", p.currency)}</Text>}
               </TouchableOpacity>
               
               <TouchableOpacity
@@ -363,7 +405,7 @@ export default function PublicAcceptByCode() {
                 disabled={busy}
                 testID="btn-submit-reject"
               >
-                {busy ? <ActivityIndicator color="#fff" /> : <Text style={[s.btnText, { color: theme.colors.danger }]}>RECUSAR PROPOSTA</Text>}
+                {busy ? <ActivityIndicator color="#fff" /> : <Text style={[s.btnText, { color: theme.colors.danger }]}>{t("reject", p.currency)}</Text>}
               </TouchableOpacity>
             </View>
           </View>

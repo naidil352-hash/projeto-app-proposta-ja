@@ -94,7 +94,7 @@ export default function Profile() {
       null
     );
 
-  const [activeTab, setActiveTab] = useState<"empresa" | "users">("empresa");
+  const [activeTab, setActiveTab] = useState<"empresa" | "users" | "templates">("empresa");
   const [usersList, setUsersList] = useState<any[]>([]);
   const [loadingUsers, setLoadingUsers] = useState(false);
   const [userModalVisible, setUserModalVisible] = useState(false);
@@ -110,6 +110,164 @@ export default function Profile() {
 
   const [reactivateEmail, setReactivateEmail] = useState("");
   const [reactivateModalVisible, setReactivateModalVisible] = useState(false);
+
+  // Commercial Templates States
+  const [templates, setTemplates] = useState<any[]>([]);
+  const [loadingTemplates, setLoadingTemplates] = useState(false);
+  const [templateModalVisible, setTemplateModalVisible] = useState(false);
+  const [editingTemplate, setEditingTemplate] = useState<any | null>(null);
+
+  // Template Form Fields
+  const [tplName, setTplName] = useState("");
+  const [tplIsDefault, setTplIsDefault] = useState(false);
+  const [tplPaymentTerms, setTplPaymentTerms] = useState("");
+  const [tplShippingType, setTplShippingType] = useState("");
+  const [tplShippingResponsible, setTplShippingResponsible] = useState("");
+  const [tplShippingCompany, setTplShippingCompany] = useState("");
+  const [tplManufacturingDays, setTplManufacturingDays] = useState("");
+  const [tplDeliveryDays, setTplDeliveryDays] = useState("");
+  const [tplWarranty, setTplWarranty] = useState("");
+  const [tplValidityDays, setTplValidityDays] = useState("15");
+  const [tplIncoterm, setTplIncoterm] = useState("");
+  const [tplCurrency, setTplCurrency] = useState("BRL");
+  const [tplCommercialConditions, setTplCommercialConditions] = useState("");
+  const [tplInternalNotes, setTplInternalNotes] = useState("");
+
+  const loadTemplates = async () => {
+    try {
+      setLoadingTemplates(true);
+      const { data } = await api.get("/commercial-templates");
+      setTemplates(data || []);
+    } catch (e) {
+      console.log("Error loading templates:", e);
+    } finally {
+      setLoadingTemplates(false);
+    }
+  };
+
+  useEffect(() => {
+    if (activeTab === "templates" && user?.role !== "seller") {
+      loadTemplates();
+    }
+  }, [activeTab]);
+
+  const clearTemplateForm = () => {
+    setTplName("");
+    setTplIsDefault(false);
+    setTplPaymentTerms("");
+    setTplShippingType("");
+    setTplShippingResponsible("");
+    setTplShippingCompany("");
+    setTplManufacturingDays("");
+    setTplDeliveryDays("");
+    setTplWarranty("");
+    setTplValidityDays("15");
+    setTplIncoterm("");
+    setTplCurrency("BRL");
+    setTplCommercialConditions("");
+    setTplInternalNotes("");
+    setEditingTemplate(null);
+  };
+
+  const openEditTemplate = (tpl: any) => {
+    setEditingTemplate(tpl);
+    setTplName(tpl.name || "");
+    setTplIsDefault(!!tpl.is_default);
+    setTplPaymentTerms(tpl.payment_terms || "");
+    setTplShippingType(tpl.shipping_type || "");
+    setTplShippingResponsible(tpl.shipping_responsible || "");
+    setTplShippingCompany(tpl.shipping_company || "");
+    setTplManufacturingDays(tpl.manufacturing_days || "");
+    setTplDeliveryDays(tpl.delivery_days || "");
+    setTplWarranty(tpl.warranty || "");
+    setTplValidityDays(String(tpl.validity_days || 15));
+    setTplIncoterm(tpl.incoterm || "");
+    setTplCurrency(tpl.currency || "BRL");
+    setTplCommercialConditions(tpl.commercial_conditions || "");
+    setTplInternalNotes(tpl.internal_notes || "");
+    setTemplateModalVisible(true);
+  };
+
+  const handleSaveTemplate = async () => {
+    if (!tplName.trim()) {
+      Alert.alert("Erro", "Nome do modelo é obrigatório.");
+      return;
+    }
+    const payload = {
+      name: tplName.trim(),
+      is_default: tplIsDefault,
+      payment_terms: tplPaymentTerms.trim(),
+      shipping_type: tplShippingType.trim(),
+      shipping_responsible: tplShippingResponsible.trim(),
+      shipping_company: tplShippingCompany.trim(),
+      manufacturing_days: tplManufacturingDays.trim(),
+      delivery_days: tplDeliveryDays.trim(),
+      warranty: tplWarranty.trim(),
+      validity_days: parseInt(tplValidityDays, 10) || 15,
+      incoterm: tplIncoterm.trim(),
+      currency: tplCurrency,
+      commercial_conditions: tplCommercialConditions.trim(),
+      internal_notes: tplInternalNotes.trim(),
+    };
+    try {
+      if (editingTemplate) {
+        await api.put(`/commercial-templates/${editingTemplate.id}`, payload);
+      } else {
+        await api.post("/commercial-templates", payload);
+      }
+      clearTemplateForm();
+      setTemplateModalVisible(false);
+      loadTemplates();
+    } catch (e) {
+      Alert.alert("Erro", "Não foi possível salvar o modelo.");
+    }
+  };
+
+  const handleDeleteTemplate = async (id: string) => {
+    const confirmDelete = () => {
+      Alert.alert(
+        "Confirmar exclusão",
+        "Deseja realmente excluir este modelo?",
+        [
+          { text: "Cancelar", style: "cancel" },
+          {
+            text: "Excluir",
+            style: "destructive",
+            onPress: async () => {
+              try {
+                await api.delete(`/commercial-templates/${id}`);
+                loadTemplates();
+              } catch (e) {
+                Alert.alert("Erro", "Não foi possível excluir o modelo.");
+              }
+            },
+          },
+        ]
+      );
+    };
+
+    if (Platform.OS === "web") {
+      if (window.confirm("Deseja realmente excluir este modelo?")) {
+        try {
+          await api.delete(`/commercial-templates/${id}`);
+          loadTemplates();
+        } catch (e) {
+          Alert.alert("Erro", "Não foi possível excluir o modelo.");
+        }
+      }
+    } else {
+      confirmDelete();
+    }
+  };
+
+  const handleSetDefaultTemplate = async (id: string) => {
+    try {
+      await api.post(`/commercial-templates/${id}/set-default`);
+      loadTemplates();
+    } catch (e) {
+      Alert.alert("Erro", "Não foi possível definir como padrão.");
+    }
+  };
 
   const loadUsers = async () => {
     try {
@@ -449,6 +607,304 @@ export default function Profile() {
           <View style={[s.progressBarFill, { width: `${percent}%` }]} />
         </View>
       </View>
+    );
+  };
+
+function Select({ label, value, onValueChange, options, testID }: any) {
+  const [open, setOpen] = useState(false);
+  return (
+    <View style={{ gap: 6, position: 'relative', zIndex: open ? 999 : 1 }}>
+      <Text style={s.label}>{label}</Text>
+      <TouchableOpacity
+        testID={testID}
+        style={s.input}
+        onPress={() => setOpen(!open)}
+      >
+        <Text style={{ color: value ? theme.colors.text : theme.colors.textMuted }}>
+          {options.find((o: any) => o.value === value)?.label || "Selecione..."}
+        </Text>
+        <Ionicons name={open ? "chevron-up" : "chevron-down"} size={16} color={theme.colors.textSec} style={{ position: 'absolute', right: 12, top: 12 }} />
+      </TouchableOpacity>
+      {open && (
+        <View style={{ backgroundColor: '#fff', borderWidth: 1, borderColor: theme.colors.border, borderRadius: 8, marginTop: 4, position: 'absolute', top: '100%', left: 0, right: 0, zIndex: 1000, shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.1, shadowRadius: 4, elevation: 3 }}>
+          <ScrollView style={{ maxHeight: 200 }} nestedScrollEnabled={true} keyboardShouldPersistTaps="handled">
+            {options.map((opt: any) => (
+              <TouchableOpacity
+                key={opt.value}
+                style={{ padding: 12, borderBottomWidth: 1, borderBottomColor: theme.colors.border }}
+                onPress={() => {
+                  onValueChange(opt.value);
+                  setOpen(false);
+                }}
+              >
+                <Text style={{ color: theme.colors.text, fontWeight: value === opt.value ? '700' : '400' }}>
+                  {opt.label}
+                </Text>
+              </TouchableOpacity>
+            ))}
+          </ScrollView>
+        </View>
+      )}
+    </View>
+  );
+}
+
+  const renderTemplatesTab = () => {
+    return (
+      <View style={s.usersTabContainer}>
+        <View style={s.usersHeaderRow}>
+          <Text style={s.usersSectionTitle}>Modelos Comerciais (Templates)</Text>
+          <TouchableOpacity 
+            style={s.newUserBtn} 
+            onPress={() => {
+              clearTemplateForm();
+              setTemplateModalVisible(true);
+            }}
+            testID="btn-new-template"
+          >
+            <Ionicons name="add" size={20} color="#fff" />
+            <Text style={s.newUserBtnText}>Novo Modelo</Text>
+          </TouchableOpacity>
+        </View>
+
+        {loadingTemplates ? (
+          <ActivityIndicator color={theme.colors.primary} style={{ marginVertical: 32 }} />
+        ) : (
+          <View style={{ gap: 12, marginTop: 12 }}>
+            {templates.length === 0 ? (
+              <Text style={s.noUsersText}>Nenhum modelo comercial cadastrado.</Text>
+            ) : (
+              templates.map((tpl) => (
+                <View key={tpl.id} style={[s.userCardItem, { padding: 16, backgroundColor: '#fff', borderLeftWidth: 4, borderLeftColor: tpl.is_default ? theme.colors.success : theme.colors.border }]} testID={`tpl-card-${tpl.id}`}>
+                  <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <View style={{ flex: 1, gap: 4 }}>
+                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                        <Text style={{ fontSize: 16, fontWeight: '700', color: theme.colors.text }}>{tpl.name}</Text>
+                        {tpl.is_default && (
+                          <View style={{ backgroundColor: theme.colors.statusWonBg, paddingHorizontal: 8, paddingVertical: 2, borderRadius: 4, borderWidth: 1, borderColor: theme.colors.statusWonBorder }}>
+                            <Text style={{ fontSize: 10, fontWeight: '700', color: theme.colors.statusWonText }}>PADRÃO</Text>
+                          </View>
+                        )}
+                      </View>
+                      <Text style={{ fontSize: 12, color: theme.colors.textSec }}>
+                        Moeda: {tpl.currency || "BRL"} · Incoterm: {tpl.incoterm || "-"} · Frete: {tpl.shipping_type || "-"}
+                      </Text>
+                    </View>
+                    <View style={{ flexDirection: 'row', gap: 8 }}>
+                      {!tpl.is_default && (
+                        <TouchableOpacity
+                          style={{ padding: 6, borderRadius: 6, backgroundColor: theme.colors.statusOpenBg, borderWidth: 1, borderColor: theme.colors.statusOpenBorder }}
+                          onPress={() => handleSetDefaultTemplate(tpl.id)}
+                          testID={`btn-set-default-${tpl.id}`}
+                        >
+                          <Text style={{ fontSize: 11, fontWeight: '700', color: theme.colors.statusOpenText }}>Definir Padrão</Text>
+                        </TouchableOpacity>
+                      )}
+                      <TouchableOpacity
+                        style={{ padding: 6, borderRadius: 6, backgroundColor: theme.colors.surfaceAlt, borderWidth: 1, borderColor: theme.colors.border }}
+                        onPress={() => openEditTemplate(tpl)}
+                        testID={`btn-edit-${tpl.id}`}
+                      >
+                        <Ionicons name="create-outline" size={16} color={theme.colors.textSec} />
+                      </TouchableOpacity>
+                      <TouchableOpacity
+                        style={{ padding: 6, borderRadius: 6, backgroundColor: '#FEF2F2', borderWidth: 1, borderColor: '#FCA5A5' }}
+                        onPress={() => handleDeleteTemplate(tpl.id)}
+                        testID={`btn-delete-${tpl.id}`}
+                      >
+                        <Ionicons name="trash-outline" size={16} color={theme.colors.danger} />
+                      </TouchableOpacity>
+                    </View>
+                  </View>
+                </View>
+              ))
+            )}
+          </View>
+        )}
+      </View>
+    );
+  };
+
+  const renderTemplateModal = () => {
+    const freteOptions = [
+      { label: "CIF", value: "CIF" },
+      { label: "FOB", value: "FOB" },
+      { label: "Por conta do cliente", value: "Por conta do cliente" },
+      { label: "Retirada no local", value: "Retirada no local" },
+      { label: "A combinar", value: "A combinar" },
+    ];
+    const pagamentoOptions = [
+      { label: "À vista", value: "À vista" },
+      { label: "7 dias", value: "7 dias" },
+      { label: "14 dias", value: "14 dias" },
+      { label: "21 dias", value: "21 dias" },
+      { label: "28 dias", value: "28 dias" },
+      { label: "30 dias", value: "30 dias" },
+      { label: "45 dias", value: "45 dias" },
+      { label: "60 dias", value: "60 dias" },
+      { label: "90 dias", value: "90 dias" },
+      { label: "Parcelado", value: "Parcelado" },
+      { label: "Personalizado", value: "Personalizado" },
+    ];
+    const incotermOptions = [
+      { label: "CIF", value: "CIF" },
+      { label: "FOB", value: "FOB" },
+      { label: "EXW", value: "EXW" },
+      { label: "DDP", value: "DDP" },
+      { label: "FAS", value: "FAS" },
+      { label: "CFR", value: "CFR" },
+      { label: "CPT", value: "CPT" },
+      { label: "CIP", value: "CIP" },
+      { label: "DAP", value: "DAP" },
+      { label: "DPU", value: "DPU" },
+    ];
+    const moedaOptions = [
+      { label: "BRL (R$)", value: "BRL" },
+      { label: "USD (US$)", value: "USD" },
+      { label: "EUR (€)", value: "EUR" },
+      { label: "PYG (Gs)", value: "PYG" },
+    ];
+
+    return (
+      <Modal visible={templateModalVisible} transparent animationType="fade" onRequestClose={() => setTemplateModalVisible(false)}>
+        <View style={s.modalOverlay}>
+          <View style={s.modalCard}>
+            <View style={s.modalHeader}>
+              <Text style={s.modalTitle}>{editingTemplate ? "Editar Modelo" : "Novo Modelo"}</Text>
+              <TouchableOpacity onPress={() => setTemplateModalVisible(false)}>
+                <Ionicons name="close" size={24} color={theme.colors.textSec} />
+              </TouchableOpacity>
+            </View>
+
+            <ScrollView contentContainerStyle={s.modalContent} style={{ maxHeight: 450 }} nestedScrollEnabled={true}>
+              <Input
+                label="Nome do Modelo *"
+                placeholder="Ex: Condições Comerciais Padrão"
+                value={tplName}
+                onChangeText={setTplName}
+                testID="tpl-inp-name"
+              />
+
+              <Select
+                label="Moeda"
+                value={tplCurrency}
+                onValueChange={setTplCurrency}
+                options={moedaOptions}
+                testID="tpl-sel-currency"
+              />
+
+              <Select
+                label="Frete"
+                value={tplShippingType}
+                onValueChange={setTplShippingType}
+                options={freteOptions}
+                testID="tpl-sel-shipping"
+              />
+
+              <Select
+                label="Incoterm"
+                value={tplIncoterm}
+                onValueChange={setTplIncoterm}
+                options={incotermOptions}
+                testID="tpl-sel-incoterm"
+              />
+
+              <Select
+                label="Forma de Pagamento"
+                value={tplPaymentTerms}
+                onValueChange={setTplPaymentTerms}
+                options={pagamentoOptions}
+                testID="tpl-sel-payment"
+              />
+
+              <Input
+                label="Responsável pelo frete"
+                placeholder="Ex: Destinatário"
+                value={tplShippingResponsible}
+                onChangeText={setTplShippingResponsible}
+                testID="tpl-inp-shipping-resp"
+              />
+
+              <Input
+                label="Transportadora"
+                placeholder="Ex: Alfa Transportes"
+                value={tplShippingCompany}
+                onChangeText={setTplShippingCompany}
+                testID="tpl-inp-shipping-comp"
+              />
+
+              <Input
+                label="Prazo de fabricação"
+                placeholder="Ex: 10 dias"
+                value={tplManufacturingDays}
+                onChangeText={setTplManufacturingDays}
+                testID="tpl-inp-manufacturing"
+              />
+
+              <Input
+                label="Prazo de entrega"
+                placeholder="Ex: 5 dias"
+                value={tplDeliveryDays}
+                onChangeText={setTplDeliveryDays}
+                testID="tpl-inp-delivery"
+              />
+
+              <Input
+                label="Garantia"
+                placeholder="Ex: 12 meses"
+                value={tplWarranty}
+                onChangeText={setTplWarranty}
+                testID="tpl-inp-warranty"
+              />
+
+              <Input
+                label="Validade da proposta (dias)"
+                placeholder="15"
+                value={tplValidityDays}
+                onChangeText={(v: string) => setTplValidityDays(v.replace(/\D/g, "").slice(0, 3))}
+                keyboardType="number-pad"
+                testID="tpl-inp-validity"
+              />
+
+              <Input
+                label="Observações comerciais"
+                placeholder="Opcional"
+                value={tplCommercialConditions}
+                onChangeText={setTplCommercialConditions}
+                multiline
+                testID="tpl-inp-notes"
+              />
+
+              <Input
+                label="Observações internas"
+                placeholder="Opcional"
+                value={tplInternalNotes}
+                onChangeText={setTplInternalNotes}
+                multiline
+                testID="tpl-inp-internal-notes"
+              />
+
+              <TouchableOpacity
+                style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginVertical: 12 }}
+                onPress={() => setTplIsDefault(!tplIsDefault)}
+                testID="tpl-chk-default"
+              >
+                <Ionicons name={tplIsDefault ? "checkbox" : "square-outline"} size={22} color={tplIsDefault ? theme.colors.primary : "#64748B"} />
+                <Text style={{ fontSize: 14, color: theme.colors.text }}>Definir como modelo padrão da empresa</Text>
+              </TouchableOpacity>
+            </ScrollView>
+
+            <View style={s.modalFooter}>
+              <TouchableOpacity style={s.btnCancel} onPress={() => setTemplateModalVisible(false)} testID="tpl-btn-cancel">
+                <Text style={s.btnCancelText}>Cancelar</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={s.btnConfirm} onPress={handleSaveTemplate} testID="tpl-btn-submit">
+                <Text style={s.btnConfirmText}>Salvar</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
     );
   };
 
@@ -879,6 +1335,15 @@ export default function Profile() {
             </Text>
           </TouchableOpacity>
           <TouchableOpacity
+            style={[s.tabButton, activeTab === "templates" && s.tabButtonActive]}
+            onPress={() => setActiveTab("templates")}
+            testID="tab-templates"
+          >
+            <Text style={[s.tabButtonText, activeTab === "templates" && s.tabButtonTextActive]}>
+              Modelos
+            </Text>
+          </TouchableOpacity>
+          <TouchableOpacity
             style={[s.tabButton, activeTab === "users" && s.tabButtonActive]}
             onPress={() => setActiveTab("users")}
           >
@@ -1076,6 +1541,8 @@ export default function Profile() {
             </TouchableOpacity>
           </View>
         </View>
+      ) : activeTab === "templates" ? (
+        renderTemplatesTab()
       ) : (
         renderUsersTab()
       )}
@@ -1176,6 +1643,15 @@ export default function Profile() {
                 >
                   <Text style={[s.tabButtonText, activeTab === "empresa" && s.tabButtonTextActive]}>
                     Empresa
+                  </Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[s.tabButton, activeTab === "templates" && s.tabButtonActive]}
+                  onPress={() => setActiveTab("templates")}
+                  testID="tab-templates-mobile"
+                >
+                  <Text style={[s.tabButtonText, activeTab === "templates" && s.tabButtonTextActive]}>
+                    Modelos
                   </Text>
                 </TouchableOpacity>
                 <TouchableOpacity
@@ -1580,6 +2056,8 @@ export default function Profile() {
                   </Text>
                 </TouchableOpacity>
               </>
+            ) : activeTab === "templates" ? (
+              renderTemplatesTab()
             ) : (
               renderUsersTab()
             )}
@@ -1588,6 +2066,7 @@ export default function Profile() {
       )}
       {renderUserModal()}
       {renderReactivateModal()}
+      {renderTemplateModal()}
     </SafeAreaView>
   );
 }

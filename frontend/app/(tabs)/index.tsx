@@ -54,6 +54,7 @@ type Stats = {
   acceptance_rate?: number;
   is_trial?: boolean;
   trial_days_remaining?: number | null;
+  trial_is_expired?: boolean;
   followup_count?: number;
   overdue_count?: number;
   viewed_today_count?: number;
@@ -339,29 +340,23 @@ export default function Dashboard() {
         <View style={s.desktopSecondary}>
           <View style={s.sideCard}>
             <Text style={s.sideCardLabel}>
-              Uso mensal
+              {stats?.is_pro ? "Assinatura" : "Dias de teste"}
             </Text>
             <Text style={s.sideCardValue}>
-              {stats?.month_count ||
-                0}/
-              {stats?.month_quota ||
-                10} propostas
+              {stats?.is_pro
+                ? "Acesso Ilimitado"
+                : `${stats?.trial_days_remaining ?? 0} / 60 dias`}
             </Text>
             <View style={s.bar}>
               <View
                 style={[
                   s.barFill,
                   {
-                    width: `${Math.min(
-                      100,
-                      Math.round(
-                        ((stats?.month_count ||
-                          0) /
-                          (stats?.month_quota ||
-                            10)) *
-                          100
-                      )
-                    )}%`,
+                    width: `${stats?.is_pro
+                      ? 100
+                      : stats?.trial_is_expired
+                      ? 0
+                      : Math.min(100, Math.round(((stats?.trial_days_remaining ?? 0) / 60) * 100))}%`,
                   },
                 ]}
               />
@@ -371,12 +366,11 @@ export default function Dashboard() {
                 s.usageHint
               }
             >
-              {(stats?.month_count ||
-                0) >=
-              (stats?.month_quota ||
-                10)
-                ? "Limite atingido"
-                : "Uso deste mês"}
+              {stats?.is_pro
+                ? "Plano Pro Ativo"
+                : stats?.trial_is_expired
+                ? "Avaliação expirada"
+                : "Período de teste ativo"}
             </Text>
           </View>
 
@@ -526,10 +520,7 @@ export default function Dashboard() {
             </Text>
           )}
 
-          {!stats?.is_pro &&
-            stats &&
-            (stats.month_quota ||
-              10) > 0 && (
+          {!stats?.is_pro && stats && (
               <TouchableOpacity
                 style={s.usageCard}
                 onPress={() =>
@@ -549,13 +540,9 @@ export default function Dashboard() {
                       s.usageTitle
                     }
                   >
-                    {stats.month_count ||
-                      0}
-                    /
-                    {stats.month_quota ||
-                      10}{" "}
-                    propostas este
-                    mês
+                    {stats.trial_is_expired
+                      ? "Período de teste expirado"
+                      : `${stats.trial_days_remaining ?? 0} dias de teste restantes`}
                   </Text>
 
                   <View
@@ -584,16 +571,9 @@ export default function Dashboard() {
                     style={[
                       s.barFill,
                       {
-                        width: `${Math.min(
-                          100,
-                          Math.round(
-                            ((stats.month_count ||
-                              0) /
-                              (stats.month_quota ||
-                                10)) *
-                              100
-                          )
-                        )}%`,
+                        width: `${stats.trial_is_expired
+                          ? 0
+                          : Math.min(100, Math.round(((stats.trial_days_remaining ?? 0) / 60) * 100))}%`,
                       },
                     ]}
                   />
@@ -604,11 +584,8 @@ export default function Dashboard() {
                     s.usageHint
                   }
                 >
-                  {(stats.month_count ||
-                    0) >=
-                  (stats.month_quota ||
-                    10)
-                    ? "Limite atingido — toque para liberar propostas ilimitadas"
+                  {stats.trial_is_expired
+                    ? "Toque para assinar o plano Pro e liberar acesso"
                     : "Toque para conhecer o plano Pro · ilimitado"}
                 </Text>
               </TouchableOpacity>

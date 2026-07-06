@@ -73,7 +73,7 @@ class TestSubscriptionMe:
         data = r.json()
         assert data["plan"] == "free"
         assert data["is_pro"] is False
-        assert data["month_quota"] == 10
+        assert data["month_quota"] is None
         assert data["month_count"] == 0
 
     def test_auth_me_has_plan_fields(self, session, user_a):
@@ -86,7 +86,7 @@ class TestSubscriptionMe:
             assert k in d, f"missing {k} in /auth/me"
         assert d["plan"] == "free"
         assert d["is_pro"] is False
-        assert d["month_quota"] == 10
+        assert d["month_quota"] is None
 
 
 # ---------- Checkout ----------
@@ -197,7 +197,7 @@ class TestQuota:
         # Verify fresh user starts at 0
         me = session.get(f"{API}/subscription/me", headers=ctx["headers"], timeout=30).json()
         assert me["month_count"] == 0
-        assert me["month_quota"] == 10
+        assert me["month_quota"] is None
 
         base_payload = {
             "client_document": "000.000.000-00",
@@ -215,17 +215,17 @@ class TestQuota:
         me2 = session.get(f"{API}/subscription/me", headers=ctx["headers"], timeout=30).json()
         assert me2["month_count"] == 10
 
-        # 11th should fail with 402
+        # 11th should succeed because monthly quota was removed
         p11 = dict(base_payload, client_name="TEST Cliente Q11")
         r11 = session.post(f"{API}/proposals", headers=ctx["headers"], json=p11, timeout=30)
-        assert r11.status_code == 402, f"expected 402, got {r11.status_code}: {r11.text}"
+        assert r11.status_code == 200, f"expected 200, got {r11.status_code}: {r11.text}"
 
-        # Duplicate should also be blocked by quota
+        # Duplicate should also succeed
         first_list = session.get(f"{API}/proposals", headers=ctx["headers"], timeout=30).json()
-        assert len(first_list) == 10
+        assert len(first_list) == 11
         first_id = first_list[0]["id"]
         rd = session.post(f"{API}/proposals/{first_id}/duplicate", headers=ctx["headers"], timeout=30)
-        assert rd.status_code == 402
+        assert rd.status_code == 200
 
 
 # ---------- Stats includes plan info ----------

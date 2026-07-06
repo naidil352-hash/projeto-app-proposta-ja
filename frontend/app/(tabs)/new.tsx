@@ -73,6 +73,59 @@ export default function NewProposal() {
   const [validity, setValidity] = useState("15");
   const [images, setImages] = useState<string[]>([]);
   
+  const [clientEmail, setClientEmail] = useState("");
+  const [clientCompany, setClientCompany] = useState("");
+  const [clientCity, setClientCity] = useState("");
+  const [clientState, setClientState] = useState("");
+  const [clientAddress, setClientAddress] = useState("");
+  const [clientId, setClientId] = useState("");
+
+  // New Commercial Conditions State Variables
+  const [shippingType, setShippingType] = useState("");
+  const [shippingResponsible, setShippingResponsible] = useState("");
+  const [shippingCompany, setShippingCompany] = useState("");
+  const [manufacturingDays, setManufacturingDays] = useState("");
+  const [deliveryDays, setDeliveryDays] = useState("");
+  const [warranty, setWarranty] = useState("");
+  const [deliveryPlace, setDeliveryPlace] = useState("");
+  const [incoterm, setIncoterm] = useState("");
+  const [currency, setCurrency] = useState("BRL");
+  const [commercialConditions, setCommercialConditions] = useState("");
+  const [internalNotes, setInternalNotes] = useState("");
+
+  const [templates, setTemplates] = useState<any[]>([]);
+
+  const applyTemplate = (tpl: any) => {
+    if (!tpl) return;
+    setPaymentTerms(tpl.payment_terms || "");
+    setShippingType(tpl.shipping_type || "");
+    setShippingResponsible(tpl.shipping_responsible || "");
+    setShippingCompany(tpl.shipping_company || "");
+    setManufacturingDays(tpl.manufacturing_days || "");
+    setDeliveryDays(tpl.delivery_days || "");
+    setWarranty(tpl.warranty || "");
+    setValidity(String(tpl.validity_days || 15));
+    setIncoterm(tpl.incoterm || "");
+    setCurrency(tpl.currency || "BRL");
+    setCommercialConditions(tpl.commercial_conditions || "");
+    setInternalNotes(tpl.internal_notes || "");
+  };
+
+  const loadTemplatesAndDefaults = async () => {
+    try {
+      const { data } = await api.get("/commercial-templates");
+      setTemplates(data || []);
+      
+      // If we are in creation mode, find the default template and pre-fill fields
+      if (!editId && data && data.length > 0) {
+        const defTpl = data.find((t: any) => t.is_default) || data[0];
+        applyTemplate(defTpl);
+      }
+    } catch (e) {
+      console.log("Error loading templates:", e);
+    }
+  };
+  
   const [products, setProducts] = useState<Product[]>([]);
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedCatalogProduct, setSelectedCatalogProduct] = useState<CatalogProduct | null>(null);
@@ -96,7 +149,7 @@ export default function NewProposal() {
   // Controla qual item está com o dropdown ativo focado para evitar sobreposição visual
   const [focusedIndex, setFocusedIndex] = useState<number | null>(null);
 
-    const reset = () => {
+  const reset = () => {
     setClientName("");
     setDoc("");
     setPhone("");
@@ -117,10 +170,38 @@ export default function NewProposal() {
     setManualUnit("UN");
     setManualPrice("");
     setManualQty("1");
+    setShippingType("");
+    setShippingResponsible("");
+    setShippingCompany("");
+    setManufacturingDays("");
+    setDeliveryDays("");
+    setWarranty("");
+    setDeliveryPlace("");
+    setIncoterm("");
+    setCurrency("BRL");
+    setCommercialConditions("");
+    setInternalNotes("");
+    setClientEmail("");
+    setClientCompany("");
+    setClientCity("");
+    setClientState("");
+    setClientAddress("");
+    setClientId("");
   };
   useEffect(() => {
     if (!editId) {
       reset();
+      loadTemplatesAndDefaults();
+
+      if (params.clientName) setClientName(decodeURIComponent(String(params.clientName)));
+      if (params.clientPhone) setPhone(decodeURIComponent(String(params.clientPhone)));
+      if (params.clientDocument) setDoc(decodeURIComponent(String(params.clientDocument)));
+      if (params.clientEmail) setClientEmail(decodeURIComponent(String(params.clientEmail)));
+      if (params.clientCompany) setClientCompany(decodeURIComponent(String(params.clientCompany)));
+      if (params.clientCity) setClientCity(decodeURIComponent(String(params.clientCity)));
+      if (params.clientState) setClientState(decodeURIComponent(String(params.clientState)));
+      if (params.clientAddress) setClientAddress(decodeURIComponent(String(params.clientAddress)));
+      if (params.clientId) setClientId(decodeURIComponent(String(params.clientId)));
       return;
     }
 
@@ -132,14 +213,32 @@ export default function NewProposal() {
         setClientName(data.client_name || "");
         setDoc(data.client_document || "");
         setPhone(data.client_phone || "");
+        setClientEmail(data.client_email || "");
+        setClientCompany(data.client_company || "");
+        setClientCity(data.client_city || "");
+        setClientState(data.client_state || "");
+        setClientAddress(data.client_address || "");
+        setClientId(data.client_id || "");
         setDeadline(data.shipping_deadline || "");
         setNotes(data.notes || "");
         setDiscount(formatCurrencyFromBackend(data.discount || ""));
         setPaymentTerms(data.payment_terms || "");
         setValidity(String(data.validity_days || 15));
         setImages(Array.isArray(data.images) ? data.images : []);
+        
+        setShippingType(data.shipping_type || "");
+        setShippingResponsible(data.shipping_responsible || "");
+        setShippingCompany(data.shipping_company || "");
+        setManufacturingDays(data.manufacturing_days || "");
+        setDeliveryDays(data.delivery_days || "");
+        setWarranty(data.warranty || "");
+        setDeliveryPlace(data.delivery_place || "");
+        setIncoterm(data.incoterm || "");
+        setCurrency(data.currency || "BRL");
+        setCommercialConditions(data.commercial_conditions || "");
+        setInternalNotes(data.internal_notes || "");
 
-                if (data.products && data.products.length) {
+        if (data.products && data.products.length) {
           setProducts(
             data.products.map((p: any) => ({
               id: crypto.randomUUID(),
@@ -545,6 +644,12 @@ export default function NewProposal() {
         client_name: clientName.trim(),
         client_document: doc.trim(),
         client_phone: phone.trim(),
+        client_email: clientEmail.trim(),
+        client_company: clientCompany.trim(),
+        client_city: clientCity.trim(),
+        client_state: clientState.trim(),
+        client_address: clientAddress.trim(),
+        client_id: clientId.trim(),
         products: cleanProducts,
         shipping_deadline: deadline.trim(),
         notes: notes.trim(),
@@ -552,6 +657,17 @@ export default function NewProposal() {
         payment_terms: paymentTerms.trim(),
         images,
         validity_days: parseInt(validity || "15", 10) || 15,
+        shipping_type: shippingType.trim(),
+        shipping_responsible: shippingResponsible.trim(),
+        shipping_company: shippingCompany.trim(),
+        manufacturing_days: manufacturingDays.trim(),
+        delivery_days: deliveryDays.trim(),
+        warranty: warranty.trim(),
+        delivery_place: deliveryPlace.trim(),
+        incoterm: incoterm.trim(),
+        currency,
+        commercial_conditions: commercialConditions.trim(),
+        internal_notes: internalNotes.trim(),
       };
       console.log("PAYLOAD", payload);
       let response;
@@ -630,6 +746,47 @@ export default function NewProposal() {
                       keyboardType="phone-pad"
                       placeholder="(11) 99999-9999"
                     />
+
+                    <Input
+                      label="E-mail"
+                      value={clientEmail}
+                      onChangeText={setClientEmail}
+                      placeholder="Ex: cliente@email.com"
+                      keyboardType="email-address"
+                    />
+
+                    <Input
+                      label="Empresa"
+                      value={clientCompany}
+                      onChangeText={setClientCompany}
+                      placeholder="Ex: ACME Ltda"
+                    />
+
+                    <View style={{ flexDirection: "row", gap: 8 }}>
+                      <View style={{ flex: 2 }}>
+                        <Input
+                          label="Cidade"
+                          value={clientCity}
+                          onChangeText={setClientCity}
+                          placeholder="Ex: São Paulo"
+                        />
+                      </View>
+                      <View style={{ flex: 1 }}>
+                        <Input
+                          label="Estado"
+                          value={clientState}
+                          onChangeText={setClientState}
+                          placeholder="Ex: SP"
+                        />
+                      </View>
+                    </View>
+
+                    <Input
+                      label="Endereço"
+                      value={clientAddress}
+                      onChangeText={setClientAddress}
+                      placeholder="Ex: Av. Paulista, 1000"
+                    />
                   </Section>
                 </View>
 
@@ -685,6 +842,33 @@ export default function NewProposal() {
 
                 <View style={s.panelCard}>
                   <Section title="Condições">
+                    {templates.length > 0 && (
+                      <View style={{ gap: 6, marginBottom: 12 }}>
+                        <Text style={{ fontSize: 14, fontWeight: "600", color: theme.colors.textSec }}>Aplicar Modelo Comercial:</Text>
+                        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 8 }}>
+                          {templates.map((tpl) => (
+                            <TouchableOpacity
+                              key={tpl.id}
+                              style={{
+                                paddingHorizontal: 12,
+                                paddingVertical: 6,
+                                borderRadius: 16,
+                                borderWidth: 1,
+                                borderColor: theme.colors.primary,
+                                backgroundColor: theme.colors.statusOpenBg,
+                              }}
+                              onPress={() => applyTemplate(tpl)}
+                              testID={`btn-apply-tpl-desktop-${tpl.id}`}
+                            >
+                              <Text style={{ fontSize: 12, fontWeight: '700', color: theme.colors.primary }}>
+                                {tpl.name}
+                              </Text>
+                            </TouchableOpacity>
+                          ))}
+                        </ScrollView>
+                      </View>
+                    )}
+
                     <Input
                       label="Prazo de embarque *"
                       value={deadline}
@@ -692,12 +876,161 @@ export default function NewProposal() {
                       placeholder="Ex: 15 dias Úteis"
                     />
 
-                    <Input
-                      label="Condições de pagamento"
-                      value={paymentTerms}
-                      onChangeText={setPaymentTerms}
-                      placeholder="Ex: 30/60/90 dias"
-                    />
+                    <View style={{ flexDirection: "row", gap: 8, zIndex: 10 }}>
+                      <View style={{ flex: 1 }}>
+                        <View style={{ gap: 6 }}>
+                          <Text style={{ fontSize: 14, fontWeight: "600", color: theme.colors.textSec }}>Moeda</Text>
+                          <View style={{ flexDirection: 'row', gap: 4 }}>
+                            {["BRL", "USD", "EUR", "PYG"].map((cur) => (
+                              <TouchableOpacity
+                                key={cur}
+                                style={{
+                                  flex: 1,
+                                  height: 48,
+                                  borderRadius: 8,
+                                  borderWidth: 1,
+                                  borderColor: currency === cur ? theme.colors.primary : theme.colors.border,
+                                  backgroundColor: currency === cur ? theme.colors.statusOpenBg : '#fff',
+                                  alignItems: 'center',
+                                  justifyContent: 'center',
+                                }}
+                                onPress={() => setCurrency(cur)}
+                                testID={`currency-btn-desktop-${cur}`}
+                              >
+                                <Text style={{ fontSize: 12, fontWeight: '700', color: currency === cur ? theme.colors.primary : theme.colors.text }}>
+                                  {cur}
+                                </Text>
+                              </TouchableOpacity>
+                            ))}
+                          </View>
+                        </View>
+                      </View>
+                      <View style={{ flex: 1 }}>
+                        <Select
+                          label="Incoterm"
+                          value={incoterm}
+                          onValueChange={setIncoterm}
+                          options={[
+                            { label: "Nenhum", value: "" },
+                            { label: "CIF", value: "CIF" },
+                            { label: "FOB", value: "FOB" },
+                            { label: "EXW", value: "EXW" },
+                            { label: "DDP", value: "DDP" },
+                            { label: "FAS", value: "FAS" },
+                            { label: "CFR", value: "CFR" },
+                            { label: "CPT", value: "CPT" },
+                            { label: "CIP", value: "CIP" },
+                            { label: "DAP", value: "DAP" },
+                            { label: "DPU", value: "DPU" },
+                          ]}
+                          testID="sel-incoterm-desktop"
+                        />
+                      </View>
+                    </View>
+
+                    <View style={{ flexDirection: "row", gap: 8, zIndex: 5 }}>
+                      <View style={{ flex: 1 }}>
+                        <Select
+                          label="Frete"
+                          value={shippingType}
+                          onValueChange={setShippingType}
+                          options={[
+                            { label: "Selecione...", value: "" },
+                            { label: "CIF", value: "CIF" },
+                            { label: "FOB", value: "FOB" },
+                            { label: "Por conta do cliente", value: "Por conta do cliente" },
+                            { label: "Retirada no local", value: "Retirada no local" },
+                            { label: "A combinar", value: "A combinar" },
+                          ]}
+                          testID="sel-shipping-type-desktop"
+                        />
+                      </View>
+                      <View style={{ flex: 1 }}>
+                        <Select
+                          label="Condições de pagamento"
+                          value={paymentTerms}
+                          onValueChange={setPaymentTerms}
+                          options={[
+                            { label: "Selecione...", value: "" },
+                            { label: "À vista", value: "À vista" },
+                            { label: "7 dias", value: "7 dias" },
+                            { label: "14 dias", value: "14 dias" },
+                            { label: "21 dias", value: "21 dias" },
+                            { label: "28 dias", value: "28 dias" },
+                            { label: "30 dias", value: "30 dias" },
+                            { label: "45 dias", value: "45 dias" },
+                            { label: "60 dias", value: "60 dias" },
+                            { label: "90 dias", value: "90 dias" },
+                            { label: "Parcelado", value: "Parcelado" },
+                            { label: "Personalizado", value: "Personalizado" },
+                          ]}
+                          testID="sel-payment-terms-desktop"
+                        />
+                      </View>
+                    </View>
+
+                    <View style={{ flexDirection: "row", gap: 8 }}>
+                      <View style={{ flex: 1 }}>
+                        <Input
+                          label="Responsável pelo frete"
+                          value={shippingResponsible}
+                          onChangeText={setShippingResponsible}
+                          placeholder="Ex: Destinatário"
+                          testID="inp-shipping-resp-desktop"
+                        />
+                      </View>
+                      <View style={{ flex: 1 }}>
+                        <Input
+                          label="Transportadora"
+                          value={shippingCompany}
+                          onChangeText={setShippingCompany}
+                          placeholder="Ex: Alfa Transportes"
+                          testID="inp-shipping-comp-desktop"
+                        />
+                      </View>
+                    </View>
+
+                    <View style={{ flexDirection: "row", gap: 8 }}>
+                      <View style={{ flex: 1 }}>
+                        <Input
+                          label="Prazo de fabricação"
+                          value={manufacturingDays}
+                          onChangeText={setManufacturingDays}
+                          placeholder="Ex: 10 dias"
+                          testID="inp-manufacturing-desktop"
+                        />
+                      </View>
+                      <View style={{ flex: 1 }}>
+                        <Input
+                          label="Prazo de entrega"
+                          value={deliveryDays}
+                          onChangeText={setDeliveryDays}
+                          placeholder="Ex: 5 dias"
+                          testID="inp-delivery-desktop"
+                        />
+                      </View>
+                    </View>
+
+                    <View style={{ flexDirection: "row", gap: 8 }}>
+                      <View style={{ flex: 1 }}>
+                        <Input
+                          label="Garantia"
+                          value={warranty}
+                          onChangeText={setWarranty}
+                          placeholder="Ex: 12 meses"
+                          testID="inp-warranty-desktop"
+                        />
+                      </View>
+                      <View style={{ flex: 1 }}>
+                        <Input
+                          label="Local de entrega"
+                          value={deliveryPlace}
+                          onChangeText={setDeliveryPlace}
+                          placeholder="Ex: Filial São Paulo"
+                          testID="inp-delivery-place-desktop"
+                        />
+                      </View>
+                    </View>
 
                     <View style={{ flexDirection: "row", gap: 8 }}>
                       <View style={{ flex: 1 }}>
@@ -729,6 +1062,24 @@ export default function NewProposal() {
                       onChangeText={setNotes}
                       placeholder="Opcional"
                       multiline
+                    />
+
+                    <Input
+                      label="Observações comerciais"
+                      value={commercialConditions}
+                      onChangeText={setCommercialConditions}
+                      placeholder="Ex: Desconto condicionado à quantidade..."
+                      multiline
+                      testID="inp-commercial-conditions-desktop"
+                    />
+
+                    <Input
+                      label="Observações internas"
+                      value={internalNotes}
+                      onChangeText={setInternalNotes}
+                      placeholder="Ex: Margem mínima aceitável de 25%..."
+                      multiline
+                      testID="inp-internal-notes-desktop"
                     />
                   </Section>
                 </View>
@@ -776,6 +1127,47 @@ export default function NewProposal() {
                   keyboardType="phone-pad"
                   placeholder="(11) 99999-9999"
                 />
+
+                <Input
+                  label="E-mail"
+                  value={clientEmail}
+                  onChangeText={setClientEmail}
+                  placeholder="Ex: cliente@email.com"
+                  keyboardType="email-address"
+                />
+
+                <Input
+                  label="Empresa"
+                  value={clientCompany}
+                  onChangeText={setClientCompany}
+                  placeholder="Ex: ACME Ltda"
+                />
+
+                <View style={{ flexDirection: "row", gap: 8 }}>
+                  <View style={{ flex: 2 }}>
+                    <Input
+                      label="Cidade"
+                      value={clientCity}
+                      onChangeText={setClientCity}
+                      placeholder="Ex: São Paulo"
+                    />
+                  </View>
+                  <View style={{ flex: 1 }}>
+                    <Input
+                      label="Estado"
+                      value={clientState}
+                      onChangeText={setClientState}
+                      placeholder="Ex: SP"
+                    />
+                  </View>
+                </View>
+
+                <Input
+                  label="Endereço"
+                  value={clientAddress}
+                  onChangeText={setClientAddress}
+                  placeholder="Ex: Av. Paulista, 1000"
+                />
               </Section>
 
                             <Section title="Itens">
@@ -807,6 +1199,33 @@ export default function NewProposal() {
               </Section>
 
               <Section title="Condições">
+                {templates.length > 0 && (
+                  <View style={{ gap: 6, marginBottom: 12 }}>
+                    <Text style={{ fontSize: 14, fontWeight: "600", color: theme.colors.textSec }}>Aplicar Modelo Comercial:</Text>
+                    <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 8 }}>
+                      {templates.map((tpl) => (
+                        <TouchableOpacity
+                          key={tpl.id}
+                          style={{
+                            paddingHorizontal: 12,
+                            paddingVertical: 6,
+                            borderRadius: 16,
+                            borderWidth: 1,
+                            borderColor: theme.colors.primary,
+                            backgroundColor: theme.colors.statusOpenBg,
+                          }}
+                          onPress={() => applyTemplate(tpl)}
+                          testID={`btn-apply-tpl-mobile-${tpl.id}`}
+                        >
+                          <Text style={{ fontSize: 12, fontWeight: '700', color: theme.colors.primary }}>
+                            {tpl.name}
+                          </Text>
+                        </TouchableOpacity>
+                      ))}
+                    </ScrollView>
+                  </View>
+                )}
+
                 <Input
                   label="Prazo de embarque *"
                   value={deadline}
@@ -814,12 +1233,161 @@ export default function NewProposal() {
                   placeholder="Ex: 15 dias úteis"
                 />
 
-                <Input
-                  label="Condições de pagamento"
-                  value={paymentTerms}
-                  onChangeText={setPaymentTerms}
-                  placeholder="Ex: 30/60/90 dias"
-                />
+                <View style={{ flexDirection: "row", gap: 8, zIndex: 10 }}>
+                  <View style={{ flex: 1 }}>
+                    <View style={{ gap: 6 }}>
+                      <Text style={{ fontSize: 14, fontWeight: "600", color: theme.colors.textSec }}>Moeda</Text>
+                      <View style={{ flexDirection: 'row', gap: 4 }}>
+                        {["BRL", "USD", "EUR", "PYG"].map((cur) => (
+                          <TouchableOpacity
+                            key={cur}
+                            style={{
+                              flex: 1,
+                              height: 48,
+                              borderRadius: 8,
+                              borderWidth: 1,
+                              borderColor: currency === cur ? theme.colors.primary : theme.colors.border,
+                              backgroundColor: currency === cur ? theme.colors.statusOpenBg : '#fff',
+                              alignItems: 'center',
+                              justifyContent: 'center',
+                            }}
+                            onPress={() => setCurrency(cur)}
+                            testID={`currency-btn-mobile-${cur}`}
+                          >
+                            <Text style={{ fontSize: 12, fontWeight: '700', color: currency === cur ? theme.colors.primary : theme.colors.text }}>
+                              {cur}
+                            </Text>
+                          </TouchableOpacity>
+                        ))}
+                      </View>
+                    </View>
+                  </View>
+                  <View style={{ flex: 1 }}>
+                    <Select
+                      label="Incoterm"
+                      value={incoterm}
+                      onValueChange={setIncoterm}
+                      options={[
+                        { label: "Nenhum", value: "" },
+                        { label: "CIF", value: "CIF" },
+                        { label: "FOB", value: "FOB" },
+                        { label: "EXW", value: "EXW" },
+                        { label: "DDP", value: "DDP" },
+                        { label: "FAS", value: "FAS" },
+                        { label: "CFR", value: "CFR" },
+                        { label: "CPT", value: "CPT" },
+                        { label: "CIP", value: "CIP" },
+                        { label: "DAP", value: "DAP" },
+                        { label: "DPU", value: "DPU" },
+                      ]}
+                      testID="sel-incoterm-mobile"
+                    />
+                  </View>
+                </View>
+
+                <View style={{ flexDirection: "row", gap: 8, zIndex: 5 }}>
+                  <View style={{ flex: 1 }}>
+                    <Select
+                      label="Frete"
+                      value={shippingType}
+                      onValueChange={setShippingType}
+                      options={[
+                        { label: "Selecione...", value: "" },
+                        { label: "CIF", value: "CIF" },
+                        { label: "FOB", value: "FOB" },
+                        { label: "Por conta do cliente", value: "Por conta do cliente" },
+                        { label: "Retirada no local", value: "Retirada no local" },
+                        { label: "A combinar", value: "A combinar" },
+                      ]}
+                      testID="sel-shipping-type-mobile"
+                    />
+                  </View>
+                  <View style={{ flex: 1 }}>
+                    <Select
+                      label="Condições de pagamento"
+                      value={paymentTerms}
+                      onValueChange={setPaymentTerms}
+                      options={[
+                        { label: "Selecione...", value: "" },
+                        { label: "À vista", value: "À vista" },
+                        { label: "7 dias", value: "7 dias" },
+                        { label: "14 dias", value: "14 dias" },
+                        { label: "21 dias", value: "21 dias" },
+                        { label: "28 dias", value: "28 dias" },
+                        { label: "30 dias", value: "30 dias" },
+                        { label: "45 dias", value: "45 dias" },
+                        { label: "60 dias", value: "60 dias" },
+                        { label: "90 dias", value: "90 dias" },
+                        { label: "Parcelado", value: "Parcelado" },
+                        { label: "Personalizado", value: "Personalizado" },
+                      ]}
+                      testID="sel-payment-terms-mobile"
+                    />
+                  </View>
+                </View>
+
+                <View style={{ flexDirection: "row", gap: 8 }}>
+                  <View style={{ flex: 1 }}>
+                    <Input
+                      label="Responsável pelo frete"
+                      value={shippingResponsible}
+                      onChangeText={setShippingResponsible}
+                      placeholder="Ex: Destinatário"
+                      testID="inp-shipping-resp-mobile"
+                    />
+                  </View>
+                  <View style={{ flex: 1 }}>
+                    <Input
+                      label="Transportadora"
+                      value={shippingCompany}
+                      onChangeText={setShippingCompany}
+                      placeholder="Ex: Alfa Transportes"
+                      testID="inp-shipping-comp-mobile"
+                    />
+                  </View>
+                </View>
+
+                <View style={{ flexDirection: "row", gap: 8 }}>
+                  <View style={{ flex: 1 }}>
+                    <Input
+                      label="Prazo de fabricação"
+                      value={manufacturingDays}
+                      onChangeText={setManufacturingDays}
+                      placeholder="Ex: 10 dias"
+                      testID="inp-manufacturing-mobile"
+                    />
+                  </View>
+                  <View style={{ flex: 1 }}>
+                    <Input
+                      label="Prazo de entrega"
+                      value={deliveryDays}
+                      onChangeText={setDeliveryDays}
+                      placeholder="Ex: 5 dias"
+                      testID="inp-delivery-mobile"
+                    />
+                  </View>
+                </View>
+
+                <View style={{ flexDirection: "row", gap: 8 }}>
+                  <View style={{ flex: 1 }}>
+                    <Input
+                      label="Garantia"
+                      value={warranty}
+                      onChangeText={setWarranty}
+                      placeholder="Ex: 12 meses"
+                      testID="inp-warranty-mobile"
+                    />
+                  </View>
+                  <View style={{ flex: 1 }}>
+                    <Input
+                      label="Local de entrega"
+                      value={deliveryPlace}
+                      onChangeText={setDeliveryPlace}
+                      placeholder="Ex: Filial São Paulo"
+                      testID="inp-delivery-place-mobile"
+                    />
+                  </View>
+                </View>
 
                 <View style={{ flexDirection: "row", gap: 8 }}>
                   <View style={{ flex: 1 }}>
@@ -851,6 +1419,24 @@ export default function NewProposal() {
                   onChangeText={setNotes}
                   placeholder="Opcional"
                   multiline
+                />
+
+                <Input
+                  label="Observações comerciais"
+                  value={commercialConditions}
+                  onChangeText={setCommercialConditions}
+                  placeholder="Ex: Desconto condicionado à quantidade..."
+                  multiline
+                  testID="inp-commercial-conditions-mobile"
+                />
+
+                <Input
+                  label="Observações internas"
+                  value={internalNotes}
+                  onChangeText={setInternalNotes}
+                  placeholder="Ex: Margem mínima aceitável de 25%..."
+                  multiline
+                  testID="inp-internal-notes-mobile"
                 />
               </Section>
 
@@ -904,6 +1490,53 @@ export default function NewProposal() {
 }
 
 
+
+function Select({ label, value, onValueChange, options, testID }: any) {
+  const [open, setOpen] = useState(false);
+  return (
+    <View style={{ gap: 6, position: 'relative', zIndex: open ? 999 : 1 }}>
+      <Text style={{ fontSize: 14, fontWeight: "600", color: theme.colors.textSec }}>{label}</Text>
+      <TouchableOpacity
+        testID={testID}
+        style={{
+          height: 48,
+          borderWidth: 1,
+          borderColor: theme.colors.border,
+          borderRadius: 8,
+          paddingHorizontal: 16,
+          backgroundColor: "#fff",
+          justifyContent: "center",
+        }}
+        onPress={() => setOpen(!open)}
+      >
+        <Text style={{ color: value ? theme.colors.text : theme.colors.textMuted }}>
+          {options.find((o: any) => o.value === value)?.label || "Selecione..."}
+        </Text>
+        <Ionicons name={open ? "chevron-up" : "chevron-down"} size={16} color={theme.colors.textSec} style={{ position: 'absolute', right: 12, top: 16 }} />
+      </TouchableOpacity>
+      {open && (
+        <View style={{ backgroundColor: '#fff', borderWidth: 1, borderColor: theme.colors.border, borderRadius: 8, marginTop: 4, position: 'absolute', top: '100%', left: 0, right: 0, zIndex: 1000, shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.1, shadowRadius: 4, elevation: 3 }}>
+          <ScrollView style={{ maxHeight: 200 }} nestedScrollEnabled={true} keyboardShouldPersistTaps="handled">
+            {options.map((opt: any) => (
+              <TouchableOpacity
+                key={opt.value}
+                style={{ padding: 12, borderBottomWidth: 1, borderBottomColor: theme.colors.border }}
+                onPress={() => {
+                  onValueChange(opt.value);
+                  setOpen(false);
+                }}
+              >
+                <Text style={{ color: theme.colors.text, fontWeight: value === opt.value ? '700' : '400' }}>
+                  {opt.label}
+                </Text>
+              </TouchableOpacity>
+            ))}
+          </ScrollView>
+        </View>
+      )}
+    </View>
+  );
+}
 
 function Section({ title, right, children }: any) {
   return (

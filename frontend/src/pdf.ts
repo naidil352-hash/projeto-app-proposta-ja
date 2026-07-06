@@ -55,6 +55,17 @@ type Proposal = {
   seller_role?: string;
   seller_signature?: string;
   public_code?: string;
+  shipping_type?: string;
+  shipping_responsible?: string;
+  shipping_company?: string;
+  manufacturing_days?: string;
+  delivery_days?: string;
+  warranty?: string;
+  delivery_place?: string;
+  incoterm?: string;
+  currency?: string;
+  commercial_conditions?: string;
+  internal_notes?: string;
 };
 
 function logoSrc(
@@ -552,6 +563,33 @@ function proposalHtml(
         </div>
 
       </div>
+
+      ${
+        (proposal.currency || proposal.incoterm || proposal.shipping_type || proposal.shipping_responsible ||
+         proposal.shipping_company || proposal.manufacturing_days || proposal.delivery_days || proposal.warranty ||
+         proposal.delivery_place || proposal.payment_terms || proposal.validity_days || proposal.commercial_conditions || proposal.internal_notes)
+          ? `
+        <div class="section">
+          <h2>Condições Comerciais</h2>
+          <div class="card" style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; padding: 12px;">
+            ${proposal.currency ? `<div style="font-size: 13px;"><strong style="color: #475569;">Moeda:</strong> ${escape_(proposal.currency)}</div>` : ""}
+            ${proposal.incoterm ? `<div style="font-size: 13px;"><strong style="color: #475569;">Incoterm:</strong> ${escape_(proposal.incoterm)}</div>` : ""}
+            ${proposal.shipping_type ? `<div style="font-size: 13px;"><strong style="color: #475569;">Frete:</strong> ${escape_(proposal.shipping_type)}</div>` : ""}
+            ${proposal.shipping_responsible ? `<div style="font-size: 13px;"><strong style="color: #475569;">Responsável pelo frete:</strong> ${escape_(proposal.shipping_responsible)}</div>` : ""}
+            ${proposal.shipping_company ? `<div style="font-size: 13px;"><strong style="color: #475569;">Transportadora:</strong> ${escape_(proposal.shipping_company)}</div>` : ""}
+            ${proposal.manufacturing_days ? `<div style="font-size: 13px;"><strong style="color: #475569;">Prazo de fabricação:</strong> ${escape_(proposal.manufacturing_days)}</div>` : ""}
+            ${proposal.delivery_days ? `<div style="font-size: 13px;"><strong style="color: #475569;">Prazo de entrega:</strong> ${escape_(proposal.delivery_days)}</div>` : ""}
+            ${proposal.warranty ? `<div style="font-size: 13px;"><strong style="color: #475569;">Garantia:</strong> ${escape_(proposal.warranty)}</div>` : ""}
+            ${proposal.delivery_place ? `<div style="font-size: 13px;"><strong style="color: #475569;">Local de entrega:</strong> ${escape_(proposal.delivery_place)}</div>` : ""}
+            ${proposal.payment_terms ? `<div style="font-size: 13px;"><strong style="color: #475569;">Forma de Pagamento:</strong> ${escape_(proposal.payment_terms)}</div>` : ""}
+            ${proposal.validity_days ? `<div style="font-size: 13px;"><strong style="color: #475569;">Validade da proposta:</strong> ${escape_(String(proposal.validity_days))} dias</div>` : ""}
+            ${proposal.commercial_conditions ? `<div style="font-size: 13px; grid-column: span 2; margin-top: 6px;"><strong style="color: #475569; display: block; margin-bottom: 2px;">Observações Comerciais:</strong> ${escape_(proposal.commercial_conditions).replace(/\n/g, '<br/>')}</div>` : ""}
+            ${proposal.internal_notes ? `<div style="font-size: 13px; grid-column: span 2; margin-top: 6px;"><strong style="color: #475569; display: block; margin-bottom: 2px;">Observações adicionais:</strong> ${escape_(proposal.internal_notes).replace(/\n/g, '<br/>')}</div>` : ""}
+          </div>
+        </div>
+      `
+          : ""
+      }
 
       ${
         proposal.images &&

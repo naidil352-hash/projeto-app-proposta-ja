@@ -20,6 +20,7 @@ import { useFocusEffect } from "expo-router";
 import { api } from "../../src/api";
 import { theme, formatCurrency } from "../../src/theme";
 import { useAuth } from "../../src/auth";
+import { maskCurrency, parseCurrency, formatCurrencyFromBackend } from "../../src/masks";
 
 type Product = {
   id: string;
@@ -83,7 +84,7 @@ export default function Products() {
     setCode(p.code);
     setName(p.name);
     setDescription(p.description || "");
-    setPrice(String(p.price));
+    setPrice(formatCurrencyFromBackend(p.price));
     setUnit(p.unit || "UN");
     setModalOpen(true);
   };
@@ -131,7 +132,7 @@ export default function Products() {
       code: code.trim(),
       name: name.trim(),
       description: description.trim(),
-      price: Number(price.replace(",", ".")),
+      price: parseCurrency(price),
       unit: unit.trim() || "UN",
     };
 
@@ -255,7 +256,7 @@ export default function Products() {
               style={s.search}
               placeholder="Preço"
               value={price}
-              onChangeText={setPrice}
+              onChangeText={(v) => setPrice(maskCurrency(v))}
               keyboardType="numeric"
             />
 

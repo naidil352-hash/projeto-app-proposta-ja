@@ -405,7 +405,7 @@ async def get_user_plan_state(user_id: str) -> dict:
         "plan": "pro" if is_pro else "free",
         "pro_until": pro_until,
         "month_count": month_count,
-        "month_quota": None if is_pro else FREE_MONTHLY_QUOTA,
+        "month_quota": None,
         "is_pro": is_pro,
         "is_trial": is_trial,
         "subscription_status": "active" if is_pro else "inactive",
@@ -497,13 +497,44 @@ async def get_scope_filter(user: dict) -> dict:
     return {"user_id": user["id"]}
 
 
-async def resolve_client_id(company_id: str, name: str, document: str, phone: str, user_id: str | None = None) -> str:
+async def resolve_client_id(
+    company_id: str,
+    name: str,
+    document: str,
+    phone: str,
+    user_id: str | None = None,
+    email: str = "",
+    company: str = "",
+    city: str = "",
+    state: str = "",
+    address: str = ""
+) -> str:
     # Restringe a busca por company_id e document
     client_doc = await db.clients.find_one({"company_id": company_id, "document": document})
+    now = datetime.now(timezone.utc).isoformat()
     if client_doc:
-        # If client doc was soft deleted, reactivate it!
+        # If client doc exists, update its fields with any non-empty values
+        update_fields = {}
+        if name and name != client_doc.get("name"):
+            update_fields["name"] = name
+        if phone and phone != client_doc.get("phone"):
+            update_fields["phone"] = phone
+        if email and email != client_doc.get("email"):
+            update_fields["email"] = email
+        if company and company != client_doc.get("company"):
+            update_fields["company"] = company
+        if city and city != client_doc.get("city"):
+            update_fields["city"] = city
+        if state and state != client_doc.get("state"):
+            update_fields["state"] = state
+        if address and address != client_doc.get("address"):
+            update_fields["address"] = address
         if client_doc.get("deleted") is True:
-            await db.clients.update_one({"id": client_doc["id"]}, {"$set": {"deleted": False, "updated_at": datetime.now(timezone.utc).isoformat()}})
+            update_fields["deleted"] = False
+            
+        if update_fields:
+            update_fields["updated_at"] = now
+            await db.clients.update_one({"id": client_doc["id"]}, {"$set": update_fields})
             reactivated = await db.clients.find_one({"id": client_doc["id"]})
             await log_audit(
                 action="update",
@@ -520,14 +551,17 @@ async def resolve_client_id(company_id: str, name: str, document: str, phone: st
     if user_id:
         await verify_trial_not_expired(company_id, user_id)
     client_id = f"cli_{uuid.uuid4().hex[:16]}"
-    now = datetime.now(timezone.utc).isoformat()
     new_client = {
         "id": client_id,
         "company_id": company_id,
         "name": name,
         "document": document,
         "phone": phone,
-        "email": "",
+        "email": email,
+        "company": company,
+        "city": city,
+        "state": state,
+        "address": address,
         "created_at": now,
         "updated_at": now,
         "deleted": False
@@ -600,6 +634,24 @@ def normalize_proposal(p: dict) -> dict:
     p["next_action_date"] = p.get("next_action_date") or None
     p["next_action_description"] = p.get("next_action_description") or ""
     p["temperature"] = p.get("temperature") or "morna"
+    # Sprint 7 fields
+    p["shipping_type"] = p.get("shipping_type") or ""
+    p["shipping_responsible"] = p.get("shipping_responsible") or ""
+    p["shipping_company"] = p.get("shipping_company") or ""
+    p["manufacturing_days"] = p.get("manufacturing_days") or ""
+    p["delivery_days"] = p.get("delivery_days") or ""
+    p["warranty"] = p.get("warranty") or ""
+    p["delivery_place"] = p.get("delivery_place") or ""
+    p["incoterm"] = p.get("incoterm") or ""
+    p["currency"] = p.get("currency") or "BRL"
+    p["commercial_conditions"] = p.get("commercial_conditions") or ""
+    p["internal_notes"] = p.get("internal_notes") or ""
+    # Hotfix Beta 02 fields
+    p["client_company"] = p.get("client_company") or ""
+    p["client_email"] = p.get("client_email") or ""
+    p["client_city"] = p.get("client_city") or ""
+    p["client_state"] = p.get("client_state") or ""
+    p["client_address"] = p.get("client_address") or ""
     return p
 
 
@@ -638,11 +690,26 @@ class VerifyEmailIn(BaseModel):
     token: str
 
 
+class ClientIn(BaseModel):
+    name: str
+    document: str
+    phone: str
+    email: Optional[str] = ""
+    company: Optional[str] = ""
+    city: Optional[str] = ""
+    state: Optional[str] = ""
+    address: Optional[str] = ""
+
+
 class ClientUpdateIn(BaseModel):
     name: Optional[str] = None
     document: Optional[str] = None
     phone: Optional[str] = None
     email: Optional[str] = None
+    company: Optional[str] = None
+    city: Optional[str] = None
+    state: Optional[str] = None
+    address: Optional[str] = None
 
 
 class LoginIn(BaseModel):
@@ -662,6 +729,33 @@ class CompanyIn(BaseModel):
     email: Optional[str] = ""
     address: Optional[str] = ""
     logo_base64: Optional[str] = ""
+    default_payment_terms: Optional[str] = ""
+    default_shipping_type: Optional[str] = ""
+    default_shipping_responsible: Optional[str] = ""
+    default_shipping_company: Optional[str] = ""
+    default_manufacturing_days: Optional[str] = ""
+    default_delivery_days: Optional[str] = ""
+    default_warranty: Optional[str] = ""
+    default_validity_days: Optional[int] = 15
+    default_incoterm: Optional[str] = ""
+    default_currency: Optional[str] = "BRL"
+    default_commercial_conditions: Optional[str] = ""
+
+class CommercialTemplateIn(BaseModel):
+    name: str
+    is_default: Optional[bool] = False
+    payment_terms: Optional[str] = ""
+    shipping_type: Optional[str] = ""
+    shipping_responsible: Optional[str] = ""
+    shipping_company: Optional[str] = ""
+    manufacturing_days: Optional[str] = ""
+    delivery_days: Optional[str] = ""
+    warranty: Optional[str] = ""
+    validity_days: Optional[int] = 15
+    incoterm: Optional[str] = ""
+    currency: Optional[str] = "BRL"
+    commercial_conditions: Optional[str] = ""
+    internal_notes: Optional[str] = ""
 
 
 class ProposalItemIn(BaseModel):
@@ -728,6 +822,12 @@ class ProposalIn(BaseModel):
     client_name: str
     client_document: str
     client_phone: str
+    client_email: Optional[str] = ""
+    client_company: Optional[str] = ""
+    client_city: Optional[str] = ""
+    client_state: Optional[str] = ""
+    client_address: Optional[str] = ""
+    client_id: Optional[str] = ""
     products: List[ProposalItemIn]
     shipping_deadline: str
     notes: Optional[str] = ""
@@ -736,6 +836,17 @@ class ProposalIn(BaseModel):
     validity_days: Optional[int] = 15
     images: Optional[List[str]] = []
     temperature: Optional[str] = "morna"
+    shipping_type: Optional[str] = ""
+    shipping_responsible: Optional[str] = ""
+    shipping_company: Optional[str] = ""
+    manufacturing_days: Optional[str] = ""
+    delivery_days: Optional[str] = ""
+    warranty: Optional[str] = ""
+    delivery_place: Optional[str] = ""
+    incoterm: Optional[str] = ""
+    currency: Optional[str] = "BRL"
+    commercial_conditions: Optional[str] = ""
+    internal_notes: Optional[str] = ""
 
 
 
@@ -748,7 +859,7 @@ class CheckoutIn(BaseModel):
     plan: str  # pro_monthly | pro_yearly
 
 
-TRIAL_DAYS = 7
+TRIAL_DAYS = 60
 REFERRAL_REWARD_DAYS = 30
 
 
@@ -806,6 +917,8 @@ async def on_startup():
 
     # Rate limits indexes
     await db.rate_limits.create_index("key")
+    await db.commercial_templates.create_index("company_id")
+    await db.commercial_templates.create_index("id", unique=True)
     await db.rate_limits.create_index("timestamp")
     
     # Audit logs indexes
@@ -1035,6 +1148,152 @@ async def update_company(data: CompanyIn, user=Depends(require_admin)):
     )
     doc = await db.companies.find_one({"id": user["company_id"]}, {"_id": 0})
     return doc
+
+# Helper function to ensure default commercial template exists
+async def ensure_default_template(company_id: str):
+    existing = await db.commercial_templates.find_one({"company_id": company_id, "deleted": {"$ne": True}})
+    if not existing:
+        tid = f"tpl_{uuid.uuid4().hex[:16]}"
+        now = datetime.now(timezone.utc).isoformat()
+        company = await db.companies.find_one({"id": company_id}) or {}
+        tpl = {
+            "id": tid,
+            "company_id": company_id,
+            "name": "Condições Comerciais Padrão",
+            "is_default": True,
+            "payment_terms": company.get("default_payment_terms") or "",
+            "shipping_type": company.get("default_shipping_type") or "",
+            "shipping_responsible": company.get("default_shipping_responsible") or "",
+            "shipping_company": company.get("default_shipping_company") or "",
+            "manufacturing_days": company.get("default_manufacturing_days") or "",
+            "delivery_days": company.get("default_delivery_days") or "",
+            "warranty": company.get("default_warranty") or "",
+            "validity_days": company.get("default_validity_days") or 15,
+            "incoterm": company.get("default_incoterm") or "",
+            "currency": company.get("default_currency") or "BRL",
+            "commercial_conditions": company.get("default_commercial_conditions") or "",
+            "internal_notes": "",
+            "created_at": now,
+            "updated_at": now,
+            "deleted": False
+        }
+        await db.commercial_templates.insert_one(tpl)
+
+# ---------- Commercial Templates CRUD ----------
+
+@api_router.get("/commercial-templates")
+async def list_templates(user=Depends(get_current_user)):
+    company_id = user.get("company_id")
+    if not company_id:
+        return []
+    await ensure_default_template(company_id)
+    cursor = db.commercial_templates.find({"company_id": company_id, "deleted": {"$ne": True}}, {"_id": 0})
+    templates = []
+    async for doc in cursor:
+        templates.append(doc)
+    return templates
+
+
+@api_router.post("/commercial-templates")
+async def create_template(data: CommercialTemplateIn, user=Depends(require_admin)):
+    company_id = user.get("company_id")
+    if not company_id:
+        raise HTTPException(status_code=400, detail="Usuário sem empresa associada")
+        
+    tid = f"tpl_{uuid.uuid4().hex[:16]}"
+    now = datetime.now(timezone.utc).isoformat()
+    
+    payload = data.dict()
+    payload["id"] = tid
+    payload["company_id"] = company_id
+    payload["created_at"] = now
+    payload["updated_at"] = now
+    payload["deleted"] = False
+    
+    if payload.get("is_default"):
+        await db.commercial_templates.update_many(
+            {"company_id": company_id},
+            {"$set": {"is_default": False}}
+        )
+        
+    await db.commercial_templates.insert_one(payload)
+    doc = await db.commercial_templates.find_one({"id": tid}, {"_id": 0})
+    return doc
+
+
+@api_router.put("/commercial-templates/{tid}")
+async def update_template(tid: str, data: CommercialTemplateIn, user=Depends(require_admin)):
+    company_id = user.get("company_id")
+    if not company_id:
+        raise HTTPException(status_code=400, detail="Usuário sem empresa associada")
+        
+    orig = await db.commercial_templates.find_one({"id": tid, "company_id": company_id, "deleted": {"$ne": True}})
+    if not orig:
+        raise HTTPException(status_code=404, detail="Template não encontrado")
+        
+    payload = data.dict()
+    payload["updated_at"] = datetime.now(timezone.utc).isoformat()
+    
+    if payload.get("is_default"):
+        await db.commercial_templates.update_many(
+            {"company_id": company_id},
+            {"$set": {"is_default": False}}
+        )
+        
+    await db.commercial_templates.update_one(
+        {"id": tid, "company_id": company_id},
+        {"$set": payload}
+    )
+    doc = await db.commercial_templates.find_one({"id": tid}, {"_id": 0})
+    return doc
+
+
+@api_router.delete("/commercial-templates/{tid}")
+async def delete_template(tid: str, user=Depends(require_admin)):
+    company_id = user.get("company_id")
+    if not company_id:
+        raise HTTPException(status_code=400, detail="Usuário sem empresa associada")
+        
+    orig = await db.commercial_templates.find_one({"id": tid, "company_id": company_id, "deleted": {"$ne": True}})
+    if not orig:
+        raise HTTPException(status_code=404, detail="Template não encontrado")
+        
+    await db.commercial_templates.update_one(
+        {"id": tid, "company_id": company_id},
+        {"$set": {"deleted": True, "is_default": False, "updated_at": datetime.now(timezone.utc).isoformat()}}
+    )
+    
+    if orig.get("is_default"):
+        other = await db.commercial_templates.find_one({"company_id": company_id, "deleted": {"$ne": True}})
+        if other:
+            await db.commercial_templates.update_one(
+                {"id": other["id"]},
+                {"$set": {"is_default": True}}
+            )
+            
+    return {"status": "success"}
+
+
+@api_router.post("/commercial-templates/{tid}/set-default")
+async def set_default_template(tid: str, user=Depends(require_admin)):
+    company_id = user.get("company_id")
+    if not company_id:
+        raise HTTPException(status_code=400, detail="Usuário sem empresa associada")
+        
+    orig = await db.commercial_templates.find_one({"id": tid, "company_id": company_id, "deleted": {"$ne": True}})
+    if not orig:
+        raise HTTPException(status_code=404, detail="Template não encontrado")
+        
+    await db.commercial_templates.update_many(
+        {"company_id": company_id},
+        {"$set": {"is_default": False}}
+    )
+    
+    await db.commercial_templates.update_one(
+        {"id": tid, "company_id": company_id},
+        {"$set": {"is_default": True, "updated_at": datetime.now(timezone.utc).isoformat()}}
+    )
+    return {"status": "success"}
     
 # ---------- Products Catalog ----------
 
@@ -1290,13 +1549,7 @@ def _proposal_total(products: List[dict], discount: float = 0.0) -> float:
 @api_router.post("/proposals")
 async def create_proposal(data: ProposalIn, user=Depends(get_current_user)):
     await verify_trial_not_expired(user["company_id"], user["id"])
-    # Enforce free tier quota
-    state = await get_user_plan_state(user["id"])
-    if not state["is_pro"] and state["month_count"] >= FREE_MONTHLY_QUOTA:
-        raise HTTPException(
-            status_code=402,
-            detail=f"Você atingiu o limite de {FREE_MONTHLY_QUOTA} propostas do plano grátis este mês. Faça upgrade para Pro para propostas ilimitadas.",
-        )
+
 
     resolved_products = []
     subtotal = 0.0
@@ -1353,7 +1606,12 @@ async def create_proposal(data: ProposalIn, user=Depends(get_current_user)):
         name=data.client_name,
         document=data.client_document,
         phone=data.client_phone,
-        user_id=user["id"]
+        user_id=user["id"],
+        email=data.client_email or "",
+        company=data.client_company or "",
+        city=data.client_city or "",
+        state=data.client_state or "",
+        address=data.client_address or ""
     )
 
     pid = str(uuid.uuid4())
@@ -1374,6 +1632,11 @@ async def create_proposal(data: ProposalIn, user=Depends(get_current_user)):
         "client_name": data.client_name,
         "client_document": data.client_document,
         "client_phone": data.client_phone,
+        "client_email": data.client_email or "",
+        "client_company": data.client_company or "",
+        "client_city": data.client_city or "",
+        "client_state": data.client_state or "",
+        "client_address": data.client_address or "",
         "products": resolved_products,
         "shipping_deadline": data.shipping_deadline,
         "notes": data.notes or "",
@@ -1401,6 +1664,17 @@ async def create_proposal(data: ProposalIn, user=Depends(get_current_user)):
         "temperature": data.temperature or "morna",
         "next_action_date": None,
         "next_action_description": "",
+        "shipping_type": data.shipping_type or "",
+        "shipping_responsible": data.shipping_responsible or "",
+        "shipping_company": data.shipping_company or "",
+        "manufacturing_days": data.manufacturing_days or "",
+        "delivery_days": data.delivery_days or "",
+        "warranty": data.warranty or "",
+        "delivery_place": data.delivery_place or "",
+        "incoterm": data.incoterm or "",
+        "currency": data.currency or "BRL",
+        "commercial_conditions": data.commercial_conditions or "",
+        "internal_notes": data.internal_notes or "",
         "timeline": [
             {
                 "id": str(uuid.uuid4()),
@@ -1598,7 +1872,12 @@ async def update_proposal(pid: str, data: ProposalIn, user=Depends(get_current_u
         name=data.client_name,
         document=data.client_document,
         phone=data.client_phone,
-        user_id=user["id"]
+        user_id=user["id"],
+        email=data.client_email or "",
+        company=data.client_company or "",
+        city=data.client_city or "",
+        state=data.client_state or "",
+        address=data.client_address or ""
     )
 
     update = {
@@ -1606,6 +1885,11 @@ async def update_proposal(pid: str, data: ProposalIn, user=Depends(get_current_u
         "client_name": data.client_name,
         "client_document": data.client_document,
         "client_phone": data.client_phone,
+        "client_email": data.client_email or "",
+        "client_company": data.client_company or "",
+        "client_city": data.client_city or "",
+        "client_state": data.client_state or "",
+        "client_address": data.client_address or "",
         "products": resolved_products,
         "shipping_deadline": data.shipping_deadline,
         "notes": data.notes or "",
@@ -1617,6 +1901,17 @@ async def update_proposal(pid: str, data: ProposalIn, user=Depends(get_current_u
         "validity_days": int(data.validity_days or 15),
         "images": data.images or [],
         "updated_at": datetime.now(timezone.utc).isoformat(),
+        "shipping_type": data.shipping_type or "",
+        "shipping_responsible": data.shipping_responsible or "",
+        "shipping_company": data.shipping_company or "",
+        "manufacturing_days": data.manufacturing_days or "",
+        "delivery_days": data.delivery_days or "",
+        "warranty": data.warranty or "",
+        "delivery_place": data.delivery_place or "",
+        "incoterm": data.incoterm or "",
+        "currency": data.currency or "BRL",
+        "commercial_conditions": data.commercial_conditions or "",
+        "internal_notes": data.internal_notes or "",
     }
     await db.proposals.update_one({"id": pid}, {"$set": update})
     updated_doc = await db.proposals.find_one({"id": pid}, {"_id": 0})
@@ -1730,12 +2025,7 @@ async def duplicate_proposal(pid: str, user=Depends(get_current_user)):
     if role == "seller" and orig.get("user_id") != user["id"]:
         raise HTTPException(status_code=404, detail="Proposta não encontrada")
         
-    state = await get_user_plan_state(user["id"])
-    if not state["is_pro"] and state["month_count"] >= FREE_MONTHLY_QUOTA:
-        raise HTTPException(
-            status_code=402,
-            detail=f"Você atingiu o limite de {FREE_MONTHLY_QUOTA} propostas este mês.",
-        )
+
     now = datetime.now(timezone.utc).isoformat()
     new_id = str(uuid.uuid4())
     public_code = await generate_unique_public_code()
@@ -2448,34 +2738,161 @@ async def get_stats(user=Depends(get_current_user)):
 # ---------- Clients history ----------
 @api_router.get("/clients")
 async def list_clients(user=Depends(get_current_user)):
-    # Retrieve documents of soft-deleted clients to exclude them
-    deleted_clients = await db.clients.find({"company_id": user["company_id"], "deleted": True}).to_list(10000)
-    deleted_docs = {c["document"] for c in deleted_clients}
-
-    pipeline = [
-        {"$match": {"user_id": user["id"], "deleted": {"$ne": True}}},
-        {"$sort": {"created_at": -1}},
-        {
-            "$group": {
-                "_id": "$client_document",
-                "client_id": {"$first": "$client_id"},
-                "client_name": {"$first": "$client_name"},
-                "client_document": {"$first": "$client_document"},
-                "client_phone": {"$first": "$client_phone"},
-                "last_proposal_at": {"$first": "$created_at"},
-                "proposals_count": {"$sum": 1},
-                "total_value": {"$sum": "$total"},
-            }
-        },
-        {"$sort": {"last_proposal_at": -1}},
-    ]
+    company_id = user.get("company_id")
+    if not company_id:
+        return []
+        
+    clients = await db.clients.find({"company_id": company_id, "deleted": {"$ne": True}}).to_list(1000)
     results = []
-    async for doc in db.proposals.aggregate(pipeline):
-        # Exclude client if it has been soft deleted
-        if doc.get("client_document") not in deleted_docs:
-            doc.pop("_id", None)
-            results.append(doc)
+    for c in clients:
+        # Match by client_id OR client_document
+        prop_q = {
+            "company_id": company_id,
+            "deleted": {"$ne": True},
+            "$or": [
+                {"client_id": c["id"]},
+                {"client_document": c["document"]}
+            ]
+        }
+        proposals = await db.proposals.find(prop_q).to_list(1000)
+        
+        proposals_count = len(proposals)
+        total_value = sum(p.get("grand_total", p.get("total", 0.0)) for p in proposals)
+        
+        last_proposal_at = ""
+        if proposals:
+            proposals.sort(key=lambda x: x.get("created_at", ""), reverse=True)
+            last_proposal_at = proposals[0].get("created_at", "")
+            
+        results.append({
+            "client_id": c["id"],
+            "client_name": c["name"],
+            "client_document": c["document"],
+            "client_phone": c["phone"],
+            "email": c.get("email", ""),
+            "company": c.get("company", ""),
+            "city": c.get("city", ""),
+            "state": c.get("state", ""),
+            "address": c.get("address", ""),
+            "last_proposal_at": last_proposal_at,
+            "proposals_count": proposals_count,
+            "total_value": total_value
+        })
+        
+    results.sort(key=lambda x: x.get("last_proposal_at", "") or x.get("client_id", ""), reverse=True)
     return results
+
+
+@api_router.post("/clients")
+async def create_client(data: ClientIn, user=Depends(get_current_user)):
+    company_id = user.get("company_id")
+    if not company_id:
+        raise HTTPException(status_code=400, detail="Empresa não associada")
+        
+    await verify_trial_not_expired(company_id, user["id"])
+    
+    # Check if a client with the same document already exists in this company
+    exists = await db.clients.find_one({"company_id": company_id, "document": data.document.strip(), "deleted": {"$ne": True}})
+    if exists:
+        raise HTTPException(status_code=400, detail="Já existe um cliente cadastrado com este documento")
+        
+    client_id = f"cli_{uuid.uuid4().hex[:16]}"
+    now = datetime.now(timezone.utc).isoformat()
+    new_client = {
+        "id": client_id,
+        "company_id": company_id,
+        "name": data.name.strip(),
+        "document": data.document.strip(),
+        "phone": data.phone.strip(),
+        "email": (data.email or "").strip(),
+        "company": (data.company or "").strip(),
+        "city": (data.city or "").strip(),
+        "state": (data.state or "").strip(),
+        "address": (data.address or "").strip(),
+        "created_at": now,
+        "updated_at": now,
+        "created_by": user["id"],
+        "deleted": False
+    }
+    await db.clients.insert_one(new_client)
+    
+    await log_audit(
+        action="create",
+        entity_type="client",
+        entity_id=client_id,
+        old_value=None,
+        new_value=new_client,
+        user_id=user["id"],
+        company_id=company_id
+    )
+    return {"id": client_id, "success": True}
+
+
+@api_router.put("/clients/{client_id}")
+async def update_client(client_id: str, data: ClientUpdateIn, user=Depends(get_current_user)):
+    company_id = user.get("company_id")
+    if not company_id:
+        raise HTTPException(status_code=400, detail="Empresa não associada")
+        
+    client_doc = await db.clients.find_one({"id": client_id, "company_id": company_id, "deleted": {"$ne": True}})
+    if not client_doc:
+        raise HTTPException(status_code=404, detail="Cliente não encontrado")
+        
+    update_data = {}
+    if data.name is not None:
+        update_data["name"] = data.name.strip()
+    if data.document is not None:
+        update_data["document"] = data.document.strip()
+    if data.phone is not None:
+        update_data["phone"] = data.phone.strip()
+    if data.email is not None:
+        update_data["email"] = data.email.strip()
+    if data.company is not None:
+        update_data["company"] = data.company.strip()
+    if data.city is not None:
+        update_data["city"] = data.city.strip()
+    if data.state is not None:
+        update_data["state"] = data.state.strip()
+    if data.address is not None:
+        update_data["address"] = data.address.strip()
+        
+    if not update_data:
+        return {"success": True}
+        
+    update_data["updated_at"] = datetime.now(timezone.utc).isoformat()
+    
+    await db.clients.update_one(
+        {"id": client_id, "company_id": company_id},
+        {"$set": update_data}
+    )
+    
+    updated_doc = await db.clients.find_one({"id": client_id})
+    
+    await log_audit(
+        action="update",
+        entity_type="client",
+        entity_id=client_id,
+        old_value=client_doc,
+        new_value=updated_doc,
+        user_id=user["id"],
+        company_id=company_id
+    )
+    
+    if "name" in update_data or "document" in update_data or "phone" in update_data:
+        prop_updates = {}
+        if "name" in update_data:
+            prop_updates["client_name"] = update_data["name"]
+        if "document" in update_data:
+            prop_updates["client_document"] = update_data["document"]
+        if "phone" in update_data:
+            prop_updates["client_phone"] = update_data["phone"]
+            
+        await db.proposals.update_many(
+            {"company_id": company_id, "client_id": client_id},
+            {"$set": prop_updates}
+        )
+        
+    return {"success": True}
 
 
 @api_router.get("/clients/{client_id}/history")
@@ -2533,6 +2950,13 @@ async def get_client_history(client_id: str, user=Depends(get_current_user)):
     return {
         "client_id": client_id,
         "client_name": client_doc["name"],
+        "client_document": client_doc.get("document", ""),
+        "client_phone": client_doc.get("phone", ""),
+        "email": client_doc.get("email", ""),
+        "company": client_doc.get("company", ""),
+        "city": client_doc.get("city", ""),
+        "state": client_doc.get("state", ""),
+        "address": client_doc.get("address", ""),
         "proposal_count": proposal_count,
         "open_count": open_count,
         "qualified_count": qualified_count,

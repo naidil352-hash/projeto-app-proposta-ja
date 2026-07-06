@@ -25,6 +25,8 @@ type MeState = {
   month_count: number;
   month_quota: number | null;
   is_pro: boolean;
+  trial_days_remaining?: number | null;
+  trial_is_expired?: boolean;
 };
 
 export default function SubscriptionScreen() {
@@ -136,10 +138,8 @@ export default function SubscriptionScreen() {
     );
   }
 
-  const usedPct =
-    me?.month_quota && me?.month_count !== undefined
-      ? Math.min(100, Math.round((me.month_count / me.month_quota) * 100))
-      : null;
+  const remainingDays = me?.trial_days_remaining ?? 0;
+  const trialPct = Math.min(100, Math.round((remainingDays / 60) * 100));
 
   return (
     <SafeAreaView style={s.root} edges={["top"]} testID="subscription-screen">
@@ -154,7 +154,7 @@ export default function SubscriptionScreen() {
       <ScrollView contentContainerStyle={s.scroll}>
         <Text style={s.title}>Escolha seu plano</Text>
         <Text style={s.subtitle}>
-          Comece grátis com {me?.month_quota ?? 10} propostas por mês. Pro libera tudo.
+          Avaliação gratuita de 60 dias inclusa. Assine o Pro para acesso ilimitado.
         </Text>
 
         {me?.is_pro ? (
@@ -168,14 +168,16 @@ export default function SubscriptionScreen() {
         ) : (
           <View style={s.usageCard}>
             <Text style={s.usageLabel}>
-              Uso do mês ({me?.month_count || 0} / {me?.month_quota || 10})
+              {me?.trial_is_expired
+                ? "Período de teste expirado"
+                : `Período de teste: ${remainingDays} dias restantes`}
             </Text>
             <View style={s.bar}>
-              <View style={[s.barFill, { width: `${usedPct || 0}%` }]} />
+              <View style={[s.barFill, { width: `${me?.trial_is_expired ? 0 : trialPct}%` }]} />
             </View>
-            {usedPct && usedPct >= 80 && (
+            {!me?.trial_is_expired && remainingDays <= 10 && (
               <Text style={s.warnText}>
-                ⚠️ Quase atingindo o limite — considere o upgrade.
+                ⚠️ Seu período de avaliação está quase no fim — considere o upgrade.
               </Text>
             )}
           </View>

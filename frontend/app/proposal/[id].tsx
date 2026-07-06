@@ -765,8 +765,8 @@ ${p.seller_name || ""}`;
                     <Text style={[s.tableCell, { width: 140, fontWeight: "600" }]}>{pr.name || ""}</Text>
                     <Text style={[s.tableCell, { width: 160, fontSize: 12, color: theme.colors.textMuted }]}>{pr.description || "-"}</Text>
                     <Text style={[s.tableCell, { width: 60, textAlign: "center" }]}>{pr.quantity} {pr.unit || "UN"}</Text>
-                    <Text style={[s.tableCell, { width: 90, textAlign: "right" }]}>{formatCurrency(unitPrice)}</Text>
-                    <Text style={[s.tableCell, { width: 90, textAlign: "right", fontWeight: "700" }]}>{formatCurrency(itemTotal)}</Text>
+                    <Text style={[s.tableCell, { width: 90, textAlign: "right" }]}>{formatCurrency(unitPrice, p.currency)}</Text>
+                    <Text style={[s.tableCell, { width: 90, textAlign: "right", fontWeight: "700" }]}>{formatCurrency(itemTotal, p.currency)}</Text>
                     <View style={{ width: 140, alignItems: "center", justifyContent: "center" }}>
                       {pr.item_type === "manual" ? (
                         <TouchableOpacity
@@ -789,17 +789,17 @@ ${p.seller_name || ""}`;
           <View style={s.footerSummary}>
             <View style={s.summaryRow}>
               <Text style={s.summaryLabel}>Subtotal</Text>
-              <Text style={s.summaryValue}>{formatCurrency(p.subtotal ?? (p.total + (p.discount ?? 0)))}</Text>
+              <Text style={s.summaryValue}>{formatCurrency(p.subtotal ?? (p.total + (p.discount ?? 0)), p.currency)}</Text>
             </View>
             {(p.discount || 0) > 0 ? (
               <View style={s.summaryRow}>
                 <Text style={s.summaryLabel}>Desconto</Text>
-                <Text style={[s.summaryValue, { color: theme.colors.danger }]}>- {formatCurrency(p.discount)}</Text>
+                <Text style={[s.summaryValue, { color: theme.colors.danger }]}>- {formatCurrency(p.discount, p.currency)}</Text>
               </View>
             ) : null}
             <View style={[s.summaryRow, s.grandTotalRow]}>
               <Text style={s.grandTotalLabel}>Total Geral</Text>
-              <Text style={s.grandTotalValue}>{formatCurrency(p.grand_total ?? p.total)}</Text>
+              <Text style={s.grandTotalValue}>{formatCurrency(p.grand_total ?? p.total, p.currency)}</Text>
             </View>
           </View>
         </View>
@@ -816,6 +816,35 @@ ${p.seller_name || ""}`;
           <Text style={s.itemName}>
             {p.shipping_deadline}
           </Text>
+        </View>
+
+        <View style={s.card}>
+          <Text style={s.sectionLabel}>Condições Comerciais</Text>
+          <View style={{ gap: 8, marginTop: 8 }}>
+            {p.currency ? <Text style={s.sub}>Moeda: <Text style={{ fontWeight: '600', color: theme.colors.text }}>{p.currency}</Text></Text> : null}
+            {p.incoterm ? <Text style={s.sub}>Incoterm: <Text style={{ fontWeight: '600', color: theme.colors.text }}>{p.incoterm}</Text></Text> : null}
+            {p.shipping_type ? <Text style={s.sub}>Frete: <Text style={{ fontWeight: '600', color: theme.colors.text }}>{p.shipping_type}</Text></Text> : null}
+            {p.shipping_responsible ? <Text style={s.sub}>Responsável pelo frete: <Text style={{ fontWeight: '600', color: theme.colors.text }}>{p.shipping_responsible}</Text></Text> : null}
+            {p.shipping_company ? <Text style={s.sub}>Transportadora: <Text style={{ fontWeight: '600', color: theme.colors.text }}>{p.shipping_company}</Text></Text> : null}
+            {p.manufacturing_days ? <Text style={s.sub}>Prazo de fabricação: <Text style={{ fontWeight: '600', color: theme.colors.text }}>{p.manufacturing_days}</Text></Text> : null}
+            {p.delivery_days ? <Text style={s.sub}>Prazo de entrega: <Text style={{ fontWeight: '600', color: theme.colors.text }}>{p.delivery_days}</Text></Text> : null}
+            {p.warranty ? <Text style={s.sub}>Garantia: <Text style={{ fontWeight: '600', color: theme.colors.text }}>{p.warranty}</Text></Text> : null}
+            {p.delivery_place ? <Text style={s.sub}>Local de entrega: <Text style={{ fontWeight: '600', color: theme.colors.text }}>{p.delivery_place}</Text></Text> : null}
+            {p.payment_terms ? <Text style={s.sub}>Condições de pagamento: <Text style={{ fontWeight: '600', color: theme.colors.text }}>{p.payment_terms}</Text></Text> : null}
+            {p.validity_days ? <Text style={s.sub}>Validade da proposta: <Text style={{ fontWeight: '600', color: theme.colors.text }}>{p.validity_days} dias</Text></Text> : null}
+            {p.commercial_conditions ? (
+              <View style={{ marginTop: 4 }}>
+                <Text style={[s.sub, { fontWeight: '700' }]}>Observações Comerciais:</Text>
+                <Text style={s.sub}>{p.commercial_conditions}</Text>
+              </View>
+            ) : null}
+            {p.internal_notes ? (
+              <View style={{ marginTop: 4, padding: 8, backgroundColor: theme.colors.surfaceAlt, borderRadius: 6 }}>
+                <Text style={[s.sub, { fontWeight: '700', color: theme.colors.primary }]}>Observações Internas (Somente equipe):</Text>
+                <Text style={s.sub}>{p.internal_notes}</Text>
+              </View>
+            ) : null}
+          </View>
         </View>
 
         {p.seller_name ? (
