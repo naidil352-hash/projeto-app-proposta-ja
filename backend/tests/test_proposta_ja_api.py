@@ -211,6 +211,121 @@ class TestStats:
 
 
 # ---------- Clients ----------
+@pytest.fixture(scope="module")
+def opportunity_store():
+    return {}
+
+
+class TestOpportunities:
+    def test_create_opportunity(self, session, auth_headers, opportunity_store):
+        payload = {
+            "title": "Oportunidade Teste A",
+            "description": "Venda para cliente A",
+            "client_name": "Cliente Oportunidade A",
+            "client_document": "333.444.555-66",
+            "client_phone": "11966665555",
+            "products": [
+                {"name": "Serviço X", "quantity": 1, "price": 500.0}
+            ],
+            "estimated_close_date": "2026-08-01",
+            "temperature": "morna",
+            "notes": "Precisa fechar este mês"
+        }
+        r = session.post(f"{API}/opportunities", headers=auth_headers, json=payload, timeout=30)
+        assert r.status_code == 200, r.text
+        data = r.json()
+        assert data["title"] == "Oportunidade Teste A"
+        assert data["status"] == "aberto"
+        assert data["client_name"] == "Cliente Oportunidade A"
+        assert "id" in data
+        assert data["estimated_value"] == 500.0
+        assert data["temperature"] == "morna"
+        opportunity_store["o1"] = data["id"]
+
+    def test_list_opportunities(self, session, auth_headers, opportunity_store):
+        r = session.get(f"{API}/opportunities", headers=auth_headers, timeout=30)
+        assert r.status_code == 200
+        items = r.json()
+        ids = [o["id"] for o in items]
+        assert opportunity_store["o1"] in ids
+
+    def test_get_single_opportunity(self, session, auth_headers, opportunity_store):
+        oid = opportunity_store["o1"]
+        r = session.get(f"{API}/opportunities/{oid}", headers=auth_headers, timeout=30)
+        assert r.status_code == 200
+        data = r.json()
+        assert data["id"] == oid
+        assert data["title"] == "Oportunidade Teste A"
+
+    def test_update_opportunity(self, session, auth_headers, opportunity_store):
+        oid = opportunity_store["o1"]
+        payload = {
+            "title": "Oportunidade Teste A Atualizada",
+            "description": "Venda atualizada para cliente A",
+            "client_name": "Cliente Oportunidade A",
+            "client_document": "333.444.555-66",
+            "client_phone": "11966665555",
+            "products": [
+                {"name": "Serviço X", "quantity": 2, "price": 500.0}
+            ],
+            "estimated_close_date": "2026-08-10",
+            "estimated_value": 1000.0,
+            "temperature": "quente",
+            "notes": "Cliente muito interessado"
+        }
+        r = session.put(f"{API}/opportunities/{oid}", headers=auth_headers, json=payload, timeout=30)
+        assert r.status_code == 200, r.text
+        data = r.json()
+        assert data["title"] == "Oportunidade Teste A Atualizada"
+        assert data["estimated_value"] == 1000.0
+        assert data["temperature"] == "quente"
+
+    def test_status_to_ganho(self, session, auth_headers, opportunity_store):
+        oid = opportunity_store["o1"]
+        r = session.patch(f"{API}/opportunities/{oid}/status", headers=auth_headers,
+                          json={"status": "ganho"}, timeout=30)
+        assert r.status_code == 200, r.text
+        data = r.json()
+        assert data["status"] == "ganho"
+
+    def test_timeline_event(self, session, auth_headers, opportunity_store):
+        oid = opportunity_store["o1"]
+        payload = {
+            "type": "whatsapp",
+            "description": "Contato inicial pelo WhatsApp",
+            "next_action_date": "2026-08-02",
+            "next_action_description": "Agendar reunião",
+            "temperature": "quente"
+        }
+        r = session.post(f"{API}/opportunities/{oid}/timeline", headers=auth_headers, json=payload, timeout=30)
+        assert r.status_code == 200, r.text
+        data = r.json()
+        assert data["timeline"][-1]["type"] == "whatsapp"
+        assert data["temperature"] == "quente"
+
+    def test_update_opportunity_temperature(self, session, auth_headers, opportunity_store):
+        oid = opportunity_store["o1"]
+        r = session.patch(f"{API}/opportunities/{oid}/temperature", headers=auth_headers,
+                          json={"temperature": "fria"}, timeout=30)
+        assert r.status_code == 200, r.text
+        assert r.json()["temperature"] == "fria"
+
+    def test_status_to_perdido_without_reason_400(self, session, auth_headers, opportunity_store):
+        oid = opportunity_store["o1"]
+        r = session.patch(f"{API}/opportunities/{oid}/status", headers=auth_headers,
+                          json={"status": "perdido"}, timeout=30)
+        assert r.status_code == 400
+
+    def test_status_to_perdido_with_reason(self, session, auth_headers, opportunity_store):
+        oid = opportunity_store["o1"]
+        r = session.patch(f"{API}/opportunities/{oid}/status", headers=auth_headers,
+                          json={"status": "perdido", "lost_reason": "Concorrente melhor"}, timeout=30)
+        assert r.status_code == 200, r.text
+        data = r.json()
+        assert data["status"] == "perdido"
+        assert data["lost_reason"] == "Concorrente melhor"
+
+
 class TestClients:
     def test_clients_aggregate(self, session, auth_headers):
         r = session.get(f"{API}/clients", headers=auth_headers, timeout=30)

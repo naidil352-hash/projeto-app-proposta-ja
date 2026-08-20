@@ -6,17 +6,90 @@ load_dotenv(ROOT_DIR / ".env", override=True)
 
 import os
 import uuid
+import csv
+import json
+import hashlib
 import logging
+import asyncio
+import zipfile
 import bcrypt
 import jwt
 from datetime import datetime, timezone, timedelta
+from pathlib import Path
 from typing import List, Optional, Literal
+from xml.etree import ElementTree as ET
 
 from fastapi import FastAPI, APIRouter, Depends, HTTPException, Request, Query
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, PlainTextResponse
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 from pydantic import BaseModel, Field, EmailStr
+from structure_analyzer import ANALYZER_VERSION, analyze_structure
+from mapping_engine import MAPPING_ENGINE_VERSION, generate_candidate_mappings
+from decision_engine import DECISION_ENGINE_VERSION, decide_mapping_candidates
+from mapping_application import (
+    APPLICATION_STATES,
+    build_application_plan,
+    build_source_signature,
+    create_confirmation,
+    create_template as create_mapping_template,
+    apply_standard_records,
+    detect_template_drift,
+    source_key,
+    validate_source,
+)
+from learning_engine import (
+    LEARNING_VERSION,
+    build_learning_summary,
+    create_learning_event,
+    feedback_event_type,
+    project_knowledge,
+    pattern_signature,
+)
+from knowledge_adapter import KNOWLEDGE_ADAPTER_VERSION, build_learned_evidence_index
+from commercial_context import COMMERCIAL_CONTEXT_VERSION, build_commercial_context
+from sales_intelligence import SALES_INTELLIGENCE_VERSION, build_sales_insight
+from action_planning import ACTION_PLANNING_VERSION, build_action_plan
+from action_execution import (
+    ACTION_EXECUTOR_VERSION,
+    build_execution_job,
+    cancel_execution_job,
+    simulate_execution_job,
+)
+from communication_gateway import (
+    COMMUNICATION_GATEWAY_VERSION,
+    build_communication_request,
+    cancel_communication_request,
+    simulate_communication_request,
+)
+from message_intelligence import (
+    MESSAGE_INTELLIGENCE_VERSION,
+    build_message_draft,
+)
+from modules.message_drafts.repository import (
+    MessageDraftInputsIncomplete,
+    MessageDraftInputsNotFound,
+    load_message_draft_inputs,
+)
+from modules.startup.indexes import ensure_indexes
+from whatsapp_integration import (
+    WhatsAppConfiguration,
+    WhatsAppProviderError,
+    WhatsAppProviderFactory,
+    build_internal_payload,
+    check_budget as check_whatsapp_budget,
+    detect_opt_out,
+    normalize_brazil_phone,
+    parse_webhook_events,
+    prepare_whatsapp_message,
+    to_meta_payload,
+    transition_status as transition_whatsapp_status,
+    validate_send_guards,
+    verify_webhook_challenge,
+    verify_webhook_signature,
+    whatsapp_configuration_for_company,
+    whatsapp_configurations_from_env,
+)
 
 import stripe
 
@@ -27,8 +100,35 @@ from fastapi import UploadFile, File
 
 # ---------- DB ----------
 mongo_url = os.environ["MONGO_URL"]
-client = AsyncIOMotorClient(mongo_url)
-db = client[os.environ["DB_NAME"]]
+DB_NAME = os.environ["DB_NAME"]
+client = None
+db = None
+
+
+def ensure_db_for_current_loop():
+    global client, db
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return
+
+    current_loop_id = id(loop)
+    if client is None:
+        client = AsyncIOMotorClient(mongo_url)
+        db = client[DB_NAME]
+        return
+
+    io_loop = getattr(client, "_io_loop", None)
+    if io_loop is None or current_loop_id != id(io_loop):
+        try:
+            client.close()
+        except Exception:
+            pass
+        client = AsyncIOMotorClient(mongo_url)
+        db = client[DB_NAME]
+
+
+ensure_db_for_current_loop()
 
 
 # ---------- App ----------
@@ -120,6 +220,7 @@ async def log_audit(
 
 
 async def check_rate_limit(action: str, identifier: str, limit: int, window_seconds: int, request: Request):
+    ensure_db_for_current_loop()
     ip = request.client.host if request.client else "unknown"
     now = datetime.now(timezone.utc)
     window_start = now - timedelta(seconds=window_seconds)
@@ -167,6 +268,7 @@ def create_access_token(user_id: str, email: str, session_id: Optional[str] = No
 
 
 async def get_current_user(request: Request) -> dict:
+    ensure_db_for_current_loop()
     auth = request.headers.get("Authorization", "")
     if not auth.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="Não autenticado")
@@ -230,6 +332,325 @@ def require_role(allowed_roles: List[str]):
 require_owner = require_role(["owner"])
 require_admin = require_role(["owner", "admin"])
 require_seller = require_role(["owner", "admin", "seller"])
+
+MAX_IMPORT_FILE_SIZE_BYTES = int(os.environ.get("MAX_IMPORT_FILE_SIZE_BYTES", 10 * 1024 * 1024))
+IMPORT_STORAGE_ROOT = ROOT_DIR / "uploads"
+ALLOWED_IMPORT_EXTENSIONS = {".csv": "CSV", ".xlsx": "XLSX"}
+IMPORT_PARSER_VERSION = "1.0.0"
+
+
+class OriginalFileStorage:
+    root_dir = IMPORT_STORAGE_ROOT
+
+    @classmethod
+    def ensure_company_dir(cls, company_id: str) -> Path:
+        company_dir = cls.root_dir / company_id
+        company_dir.mkdir(parents=True, exist_ok=True)
+        return company_dir
+
+    @classmethod
+    def save(cls, company_id: str, filename: str, content: bytes) -> str:
+        safe_name = sanitize_filename(filename)
+        company_dir = cls.ensure_company_dir(company_id)
+        storage_name = f"{uuid.uuid4()}_{safe_name}"
+        target_path = company_dir / storage_name
+        with open(target_path, "wb") as fh:
+            fh.write(content)
+        return str(target_path)
+
+    @classmethod
+    def delete(cls, ref: str) -> bool:
+        try:
+            path = Path(ref)
+            if path.exists():
+                path.unlink()
+                return True
+        except Exception:
+            return False
+        return False
+
+
+def sanitize_filename(filename: str) -> str:
+    name = (filename or "import").strip()
+    name = name.replace("\\", "/").split("/")[-1]
+    safe_name = "".join(ch for ch in name if ch.isalnum() or ch in "._- ")
+    safe_name = safe_name.strip() or "import"
+    return safe_name
+
+
+def sha256_bytes(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
+def _safe_company_id(user: dict) -> str:
+    company_id = user.get("company_id") or user.get("company")
+    if not company_id:
+        raise HTTPException(status_code=400, detail="Empresa não vinculada ao usuário")
+    return company_id
+
+
+def _csv_sniffer_delimiter(sample: str) -> str:
+    try:
+        sample = sample.replace("\r", "\n")
+        dialect = csv.Sniffer().sniff(sample, delimiters=",;\t|")
+        return dialect.delimiter
+    except Exception:
+        return ";" if ";" in sample else ","
+
+
+def _xlsx_cell_value(cell: ET.Element | None, shared_strings: list[str]) -> str:
+    if cell is None:
+        return ""
+    cell_type = cell.attrib.get("t")
+    if cell_type == "inlineStr":
+        text = "".join(node.text or "" for node in cell.iter() if node.tag.endswith("}t"))
+        return text
+    if cell_type == "s":
+        idx = int((cell.find("{*}v") or cell.find("v")).text or "0")
+        return shared_strings[idx] if idx < len(shared_strings) else ""
+    value_node = cell.find("{*}v") or cell.find("v")
+    return (value_node.text if value_node is not None else "")
+
+
+def _parse_xlsx_file(file_path: str) -> list[dict]:
+    rows_by_sheet: list[dict] = []
+    with zipfile.ZipFile(file_path, "r") as zf:
+        shared_strings: list[str] = []
+        if "xl/sharedStrings.xml" in zf.namelist():
+            root = ET.fromstring(zf.read("xl/sharedStrings.xml"))
+            for si in root.findall("{*}si"):
+                text = "".join(node.text or "" for node in si.iter() if node.tag.endswith("}t"))
+                shared_strings.append(text)
+
+        workbook_root = ET.fromstring(zf.read("xl/workbook.xml"))
+        ns = {"a": "http://schemas.openxmlformats.org/spreadsheetml/2006/main", "r": "http://schemas.openxmlformats.org/officeDocument/2006/relationships"}
+        rels_root = None
+        rel_map: dict[str, str] = {}
+        if "xl/_rels/workbook.xml.rels" in zf.namelist():
+            rels_root = ET.fromstring(zf.read("xl/_rels/workbook.xml.rels"))
+            ns_rel = {"r": "http://schemas.openxmlformats.org/package/2006/relationships"}
+            for rel in rels_root.findall("{*}Relationship"):
+                rel_map[rel.attrib.get("Id", "")] = rel.attrib.get("Target", "")
+
+        for sheet in workbook_root.findall("a:sheets/a:sheet", ns):
+            sheet_name = sheet.attrib.get("name", "Sheet")
+            rel_id = sheet.attrib.get("{http://schemas.openxmlformats.org/officeDocument/2006/relationships}id")
+            target = rel_map.get(rel_id, "")
+            target_path = "xl/" + target if not target.startswith("/") and not target.startswith("xl/") else target
+            if target_path.startswith("/"):
+                target_path = target_path.lstrip("/")
+            if target_path.startswith("xl/"):
+                actual_sheet_path = target_path
+            else:
+                actual_sheet_path = f"xl/{target}"
+
+            try:
+                sheet_xml = ET.fromstring(zf.read(actual_sheet_path))
+            except Exception:
+                continue
+
+            rows_data: list[dict] = []
+            total_rows = 0
+            max_cols = 0
+            for row in sheet_xml.findall(".//a:sheetData/a:row", ns):
+                total_rows += 1
+                row_values: list[str] = []
+                for cell in row.findall("a:c", ns):
+                    cell_ref = cell.attrib.get("r") or ""
+                    column_index = 0
+                    for ch in cell_ref:
+                        if ch.isalpha():
+                            column_index = column_index * 26 + (ord(ch.upper()) - 64)
+                    if cell_ref:
+                        while len(row_values) < column_index:
+                            row_values.append("")
+                    row_values.append(_xlsx_cell_value(cell, shared_strings))
+                if row_values:
+                    max_cols = max(max_cols, len(row_values))
+                    rows_data.append({"row_index": total_rows, "values": row_values})
+
+            if not rows_data:
+                rows_by_sheet.append({
+                    "sheet": sheet_name,
+                    "rows": 0,
+                    "columns": 0,
+                    "headers": [],
+                    "header_row": None,
+                    "header_detection_method": "structural",
+                    "header_detection_status": "NOT_APPLICABLE",
+                    "records": [],
+                })
+                continue
+
+            header_row_index = 1
+            header_values: list[str] = []
+            for row in rows_data:
+                cleaned = [v.strip() for v in row["values"] if v is not None]
+                if cleaned and any(cleaned):
+                    header_values = [str(v).strip() for v in row["values"]]
+                    header_row_index = row["row_index"]
+                    break
+
+            detected_rows = []
+            if header_values:
+                for row in rows_data:
+                    if row["row_index"] <= header_row_index:
+                        continue
+                    row_values = row["values"]
+                    record: dict[str, str] = {}
+                    for idx, header in enumerate(header_values):
+                        if idx >= len(row_values):
+                            record[header] = ""
+                        else:
+                            record[header] = row_values[idx]
+                    if any(str(v).strip() for v in record.values()):
+                        detected_rows.append({
+                            "source_row": row["row_index"],
+                            "original_record_json": record,
+                        })
+
+            rows_by_sheet.append({
+                "sheet": sheet_name,
+                "rows": total_rows,
+                "columns": max_cols,
+                "headers": header_values,
+                "header_row": header_row_index,
+                "header_detection_method": "structural",
+                "header_detection_status": "DETECTED" if header_values else "AMBIGUOUS",
+                "records": detected_rows,
+            })
+    return rows_by_sheet
+
+
+def _extract_csv_records(file_path: str) -> list[dict]:
+    rows_by_sheet = []
+    with open(file_path, "r", encoding="utf-8-sig", newline="") as fh:
+        sample = fh.read(8192)
+        fh.seek(0)
+        delimiter = _csv_sniffer_delimiter(sample)
+        reader = csv.reader(fh, delimiter=delimiter)
+        table_rows = list(reader)
+
+    if not table_rows:
+        return [{"sheet": "CSV", "rows": 0, "columns": 0, "records": []}]
+
+    header_row = None
+    for idx, row in enumerate(table_rows):
+        cleaned = [str(v).strip() for v in row]
+        if any(cleaned):
+            header_row = idx + 1
+            header_values = row
+            break
+
+    if header_row is None:
+        return [{"sheet": "CSV", "rows": len(table_rows), "columns": 0, "records": []}]
+
+    records = []
+    for row_index, row in enumerate(table_rows[header_row:], start=header_row + 1):
+        if not row or not any(str(v).strip() for v in row):
+            continue
+        record: dict[str, str] = {}
+        for idx, header in enumerate(header_values):
+            value = row[idx] if idx < len(row) else ""
+            record[str(header).strip()] = value
+        if any(str(v).strip() for v in record.values()):
+            records.append({"source_row": row_index, "original_record_json": record})
+
+    rows_by_sheet.append({
+        "sheet": "CSV",
+        "rows": len(table_rows),
+        "columns": max(len(r) for r in table_rows),
+        "headers": [str(header).strip() for header in header_values],
+        "header_row": header_row,
+        "header_detection_method": "structural",
+        "header_detection_status": "DETECTED",
+        "records": records,
+    })
+    return rows_by_sheet
+
+
+def _extract_raw_records(file_path: str, file_type: str) -> list[dict]:
+    if file_type == "XLSX":
+        sheet_entries = _parse_xlsx_file(file_path)
+    else:
+        sheet_entries = _extract_csv_records(file_path)
+
+    raw_records: list[dict] = []
+    total_rows = 0
+    for sheet in sheet_entries:
+        total_rows += int(sheet.get("rows") or 0)
+        for record in sheet.get("records", []):
+            raw_records.append({
+                "source_sheet": sheet.get("sheet", "Sheet"),
+                "source_row": record["source_row"],
+                "original_record_json": record["original_record_json"],
+                "raw_metadata": {
+                    "headers": sheet.get("headers", []),
+                    "header_row": sheet.get("header_row"),
+                    "header_detection_method": sheet.get("header_detection_method"),
+                    "header_detection_status": sheet.get("header_detection_status"),
+                    "sheet_rows": sheet.get("rows"),
+                    "sheet_columns": sheet.get("columns"),
+                },
+            })
+    return raw_records, total_rows
+
+
+def _build_import_report(batch_doc: dict, raw_records: list[dict]) -> dict:
+    return {
+        "import_id": batch_doc["id"],
+        "filename": batch_doc["filename"],
+        "status": batch_doc["status"],
+        "sheets_detected": len({r["source_sheet"] for r in raw_records}) if raw_records else 0,
+        "records_detected": batch_doc.get("records_detected", 0),
+        "records_extracted": len(raw_records),
+        "records_with_errors": batch_doc.get("records_with_errors", 0),
+        "records_skipped": batch_doc.get("records_skipped", 0),
+    }
+
+
+def get_import_batch_filter(user: dict, batch_id: Optional[str] = None) -> dict:
+    company_id = _safe_company_id(user)
+    filters = {"company_id": company_id, "deleted": {"$ne": True}}
+    if batch_id:
+        filters["id"] = batch_id
+    return filters
+
+
+def get_import_raw_filter(user: dict, batch_id: str) -> dict:
+    company_id = _safe_company_id(user)
+    return {"company_id": company_id, "import_batch_id": batch_id}
+
+
+def get_import_bucket_path(company_id: str, filename: str) -> Path:
+    directory = IMPORT_STORAGE_ROOT / company_id
+    directory.mkdir(parents=True, exist_ok=True)
+    return directory / sanitize_filename(filename)
+
+
+def get_import_file_size(file_path: Path) -> int:
+    try:
+        return file_path.stat().st_size
+    except Exception:
+        return 0
+
+
+def _ensure_import_collection_indexes():
+    try:
+        if db is None:
+            return
+        db.import_batches.create_index("company_id")
+        db.import_batches.create_index([("company_id", 1), ("created_at", -1)])
+        db.import_batches.create_index([("company_id", 1), ("checksum", 1)])
+        db.raw_records.create_index("company_id")
+        db.raw_records.create_index([("company_id", 1), ("import_batch_id", 1)])
+        db.raw_records.create_index([("company_id", 1), ("import_batch_id", 1), ("source_sheet", 1)])
+        db.raw_records.create_index([("company_id", 1), ("import_batch_id", 1), ("source_row", 1)])
+    except Exception:
+        pass
+
+
+_ensure_import_collection_indexes()
 
 
 def get_company_trial_status(company: dict) -> dict:
@@ -581,6 +1002,20 @@ async def resolve_client_id(
     return client_id
 
 
+async def _push_opportunity_timeline(opportunity_id: str, event_type: str, description: str, user_id: str | None = None, metadata: dict | None = None):
+    now = datetime.now(timezone.utc).isoformat()
+    ev = {
+        "id": str(uuid.uuid4()),
+        "event_type": event_type,
+        "description": description,
+        "user_id": user_id or "",
+        "created_at": now,
+        "metadata": metadata or {}
+    }
+    await db.opportunities.update_one({"id": opportunity_id}, {"$push": {"timeline": ev}, "$set": {"updated_at": now}})
+    return ev
+
+
 def normalize_proposal_items(products: List[dict]) -> List[dict]:
     normalized = []
     for item in products:
@@ -849,6 +1284,202 @@ class ProposalIn(BaseModel):
     internal_notes: Optional[str] = ""
 
 
+OPPORTUNITY_STAGE = Literal[
+    "NOVO",
+    "PROPOSTA_ENVIADA",
+    "FOLLOWUP_1",
+    "FOLLOWUP_2",
+    "FOLLOWUP_3",
+    "NEGOCIACAO",
+    "AGUARDANDO_CLIENTE",
+    "AGUARDANDO_APROVACAO",
+    "ALTA_INTENCAO",
+    "VENDA_GANHA",
+    "VENDA_PERDIDA",
+    "SEM_MOMENTO",
+    "SEM_RETORNO",
+    "CANCELADA",
+    "HUMANO",
+]
+
+OPPORTUNITY_STATUS = Literal[
+    "OPEN",
+    "WAITING",
+    "HUMAN_ACTION",
+    "WON",
+    "LOST",
+    "CANCELLED",
+]
+
+OPPORTUNITY_TEMPERATURE = Literal[
+    "FRIO",
+    "MORNO",
+    "QUENTE",
+    "MUITO_QUENTE",
+]
+
+
+class OpportunityTimelineEntry(BaseModel):
+    id: str
+    event_type: str
+    description: str
+    user_id: str
+    created_at: str
+    metadata: Optional[dict] = None
+
+
+class OpportunityIn(BaseModel):
+    title: str
+    description: Optional[str] = ""
+    client_id: Optional[str] = ""
+    contact_id: Optional[str] = ""
+    proposal_id: Optional[str] = ""
+    seller_id: Optional[str] = ""
+    proposal_number: Optional[str] = ""
+    proposal_date: Optional[str] = ""
+    proposal_value: Optional[float] = 0.0
+    product_summary: Optional[str] = ""
+    products: Optional[List[ProposalItemIn]] = []
+    client_name: Optional[str] = ""
+    client_document: Optional[str] = ""
+    client_phone: Optional[str] = ""
+    client_email: Optional[str] = ""
+    client_company: Optional[str] = ""
+    client_city: Optional[str] = ""
+    client_state: Optional[str] = ""
+    client_address: Optional[str] = ""
+    notes: Optional[str] = ""
+    estimated_value: Optional[float] = 0.0
+    estimated_close_date: Optional[str] = ""
+    next_action_date: Optional[str] = None
+    next_action_description: Optional[str] = ""
+    stage: Optional[OPPORTUNITY_STAGE] = "NOVO"
+    status: Optional[OPPORTUNITY_STATUS] = "OPEN"
+    temperature: Optional[OPPORTUNITY_TEMPERATURE] = "MORNO"
+    probability: Optional[int] = 0
+    last_contact_at: Optional[str] = None
+    last_customer_response_at: Optional[str] = None
+    next_action_at: Optional[str] = None
+    next_action_type: Optional[str] = ""
+    next_action_reason: Optional[str] = ""
+    customer_intent: Optional[str] = ""
+    customer_sentiment: Optional[str] = ""
+    objection_type: Optional[str] = ""
+    objection_details: Optional[str] = ""
+    loss_reason: Optional[str] = ""
+    competitor: Optional[str] = ""
+    competitor_price: Optional[float] = 0.0
+    purchase_timeline: Optional[str] = ""
+    decision_maker: Optional[str] = ""
+    ai_summary: Optional[str] = ""
+    ai_recommendation: Optional[str] = ""
+    ai_confidence: Optional[float] = 0.0
+    closed_at: Optional[str] = None
+
+
+class OpportunityUpdateIn(BaseModel):
+    title: Optional[str] = None
+    description: Optional[str] = None
+    client_id: Optional[str] = None
+    contact_id: Optional[str] = None
+    proposal_id: Optional[str] = None
+    seller_id: Optional[str] = None
+    proposal_number: Optional[str] = None
+    proposal_date: Optional[str] = None
+    proposal_value: Optional[float] = None
+    product_summary: Optional[str] = None
+    products: Optional[List[ProposalItemIn]] = None
+    client_name: Optional[str] = None
+    client_document: Optional[str] = None
+    client_phone: Optional[str] = None
+    client_email: Optional[str] = None
+    client_company: Optional[str] = None
+    client_city: Optional[str] = None
+    client_state: Optional[str] = None
+    client_address: Optional[str] = None
+    notes: Optional[str] = None
+    estimated_value: Optional[float] = None
+    estimated_close_date: Optional[str] = None
+    next_action_date: Optional[str] = None
+    next_action_description: Optional[str] = None
+    stage: Optional[OPPORTUNITY_STAGE] = None
+    status: Optional[OPPORTUNITY_STATUS] = None
+    temperature: Optional[OPPORTUNITY_TEMPERATURE] = None
+    probability: Optional[int] = None
+    last_contact_at: Optional[str] = None
+    last_customer_response_at: Optional[str] = None
+    next_action_at: Optional[str] = None
+    next_action_type: Optional[str] = None
+    next_action_reason: Optional[str] = None
+    customer_intent: Optional[str] = None
+    customer_sentiment: Optional[str] = None
+    objection_type: Optional[str] = None
+    objection_details: Optional[str] = None
+    loss_reason: Optional[str] = None
+    competitor: Optional[str] = None
+    competitor_price: Optional[float] = None
+    purchase_timeline: Optional[str] = None
+    decision_maker: Optional[str] = None
+    ai_summary: Optional[str] = None
+    ai_recommendation: Optional[str] = None
+    ai_confidence: Optional[float] = None
+    closed_at: Optional[str] = None
+
+
+class OpportunityOut(BaseModel):
+    id: str
+    company_id: str
+    title: str
+    description: str
+    client_id: str
+    contact_id: str
+    proposal_id: str
+    seller_id: str
+    seller_name: str
+    seller_email: str
+    proposal_number: str
+    proposal_date: str
+    proposal_value: float
+    product_summary: str
+    stage: str
+    status: str
+    temperature: str
+    probability: int
+    last_contact_at: Optional[str] = None
+    last_customer_response_at: Optional[str] = None
+    next_action_at: Optional[str] = None
+    next_action_type: str = ""
+    next_action_reason: str = ""
+    customer_intent: str = ""
+    customer_sentiment: str = ""
+    objection_type: str = ""
+    objection_details: str = ""
+    loss_reason: str = ""
+    competitor: str = ""
+    competitor_price: float = 0.0
+    purchase_timeline: str = ""
+    decision_maker: str = ""
+    ai_summary: str = ""
+    ai_recommendation: str = ""
+    ai_confidence: float = 0.0
+    created_at: str
+    updated_at: str
+    closed_at: Optional[str] = None
+    timeline: List[OpportunityTimelineEntry]
+
+
+class OpportunityStatusUpdate(BaseModel):
+    status: OPPORTUNITY_STATUS
+    lost_reason: Optional[str] = None
+
+
+class OpportunityStageUpdate(BaseModel):
+    stage: OPPORTUNITY_STAGE
+
+
+class OpportunityTemperatureUpdate(BaseModel):
+    temperature: OPPORTUNITY_TEMPERATURE
+
 
 class StatusUpdate(BaseModel):
     status: ProposalStatus
@@ -871,66 +1502,8 @@ def make_referral_code(user_id: str) -> str:
 # ---------- Startup ----------
 @app.on_event("startup")
 async def on_startup():
-    await db.users.create_index("email", unique=True)
-    await db.users.create_index("referral_code", unique=True, sparse=True)
-    await db.users.create_index("company_id", sparse=True)
-    await db.users.create_index("role", sparse=True)
-    await db.users.create_index("active", sparse=True)
-    await db.proposals.create_index("id", unique=True)
-    await db.proposals.create_index([("company_id", 1), ("created_at", -1)])
-    await db.proposals.create_index([
-        ("company_id", 1),
-        ("user_id", 1),
-        ("status", 1),
-        ("created_at", -1),
-    ])
-    await db.proposals.create_index([
-        ("company_id", 1),
-        ("status", 1),
-        ("created_at", -1),
-    ])
-    await db.proposals.create_index([
-        ("user_id", 1),
-        ("created_at", -1),
-    ])
-    await db.subscriptions.create_index("user_id", unique=True)
-    await db.payment_transactions.create_index("session_id", unique=True)
-    await db.products.create_index("company_id")
-
-    await db.products.create_index(
-        [("company_id", 1), ("code", 1)],
-        unique=True
-    )
-
-    # Clients indexes
-    await db.clients.create_index("company_id")
-    await db.clients.create_index("owner_user_id")
-    await db.clients.create_index("created_by")
-    try:
-        await db.clients.drop_index("company_id_1_client_document_1")
-    except Exception:
-        pass
-    await db.clients.create_index(
-        [("company_id", 1), ("document", 1)],
-        unique=True
-    )
-
-    # Rate limits indexes
-    await db.rate_limits.create_index("key")
-    await db.commercial_templates.create_index("company_id")
-    await db.commercial_templates.create_index("id", unique=True)
-    await db.rate_limits.create_index("timestamp")
-    
-    # Audit logs indexes
-    await db.audit_logs.create_index("company_id")
-    await db.audit_logs.create_index("user_id")
-    await db.audit_logs.create_index("created_at")
-
-    # Users tokens indexes
-    await db.users.create_index("verification_token", sparse=True)
-    await db.users.create_index("reset_token", sparse=True)
-    await db.users.create_index("session_id", sparse=True)
-
+    ensure_db_for_current_loop()
+    await ensure_indexes(db)
     # Migrate existing users
     await db.users.update_many(
         {"verified_email": {"$exists": False}},
@@ -951,7 +1524,10 @@ async def on_startup():
 
 @app.on_event("shutdown")
 async def on_shutdown():
-    client.close()
+    # Do not close the shared Mongo client here: it is created at module scope and
+    # reused across requests/tests. Closing it in shutdown breaks subsequent
+    # requests when the event loop has already changed or closed.
+    pass
 
 
 # ---------- Auth routes ----------
@@ -1789,7 +2365,7 @@ async def get_proposal(pid: str, user=Depends(get_current_user)):
     doc = await db.proposals.find_one({"id": pid, "deleted": {"$ne": True}}, {"_id": 0})
     if not doc:
         raise HTTPException(status_code=404, detail="Proposta não encontrada")
-        
+
     belongs_to_company = doc.get("company_id") == user["company_id"] or doc.get("user_id") == user["id"]
     if not belongs_to_company:
         raise HTTPException(status_code=404, detail="Proposta não encontrada")
@@ -2310,8 +2886,8 @@ async def add_timeline_event(pid: str, data: TimelineInput, user=Depends(get_cur
         
     # If temperature is specified and valid, update it
     if data.temperature:
-        if data.temperature not in ["fria", "morna", "quente"]:
-            raise HTTPException(status_code=400, detail="Temperatura inválida. Permitidos: fria, morna, quente")
+        if data.temperature not in ("FRIO", "MORNO", "QUENTE", "MUITO_QUENTE"):
+            raise HTTPException(status_code=400, detail="Temperatura inválida. Permitidos: FRIO, MORNO, QUENTE, MUITO_QUENTE")
         update_ops["$set"]["temperature"] = data.temperature
         
     await db.proposals.update_one({"id": pid}, update_ops)
@@ -2331,13 +2907,13 @@ async def add_timeline_event(pid: str, data: TimelineInput, user=Depends(get_cur
 
 
 @api_router.patch("/proposals/{pid}/temperature")
-async def update_opportunity_temperature(pid: str, data: dict, user=Depends(get_current_user)):
+async def update_proposal_temperature(pid: str, data: dict, user=Depends(get_current_user)):
     role = user.get("role", "owner")
     company_id = user.get("company_id")
     
     temperature = data.get("temperature")
-    if not temperature or temperature not in ["fria", "morna", "quente"]:
-        raise HTTPException(status_code=400, detail="Temperatura inválida. Permitidos: fria, morna, quente")
+    if not temperature or temperature not in ("FRIO", "MORNO", "QUENTE", "MUITO_QUENTE"):
+        raise HTTPException(status_code=400, detail="Temperatura inválida. Permitidos: FRIO, MORNO, QUENTE, MUITO_QUENTE")
         
     # Check access
     q = {"id": pid, "deleted": {"$ne": True}}
@@ -2372,21 +2948,662 @@ async def update_opportunity_temperature(pid: str, data: dict, user=Depends(get_
     return normalize_proposal(updated_doc)
 
 
+# ---------- Opportunities ----------
+
+def _opportunity_total(products: List[dict]) -> float:
+    subtotal = sum((p.get("quantity", 0) or 0) * (p.get("price", p.get("unit_price", 0)) or 0) for p in products)
+    return round(max(subtotal, 0), 2)
+
+
+def normalize_opportunity(o: dict) -> dict:
+    if not o:
+        return o
+    o["status"] = o.get("status", "OPEN")
+    o["status_updated_at"] = o.get("status_updated_at") or o.get("updated_at") or o.get("created_at") or ""
+    o["client_id"] = o.get("client_id") or ""
+    o["client_company"] = o.get("client_company") or ""
+    o["client_email"] = o.get("client_email") or ""
+    o["client_city"] = o.get("client_city") or ""
+    o["client_state"] = o.get("client_state") or ""
+    o["client_address"] = o.get("client_address") or ""
+    o["estimated_value"] = float(o.get("estimated_value") or 0.0)
+    o["temperature"] = o.get("temperature") or "MORNO"
+    o["next_action_date"] = o.get("next_action_date") or None
+    o["next_action_description"] = o.get("next_action_description") or ""
+    o["timeline"] = o.get("timeline") or []
+    o["products"] = normalize_proposal_items(o.get("products") or [])
+    o["description"] = o.get("description") or ""
+    o["title"] = o.get("title") or ""
+    o["notes"] = o.get("notes") or ""
+    o["stage"] = o.get("stage") or "NOVO"
+    return o
+
+
+@api_router.post("/opportunities")
+async def create_opportunity(data: OpportunityIn, user=Depends(get_current_user)):
+    resolved_products = []
+    subtotal = 0.0
+    for item in data.products or []:
+        if item.product_id and item.product_id.strip():
+            p_doc = await db.products.find_one({
+                "id": item.product_id,
+                "company_id": user["company_id"],
+                "active": True,
+                "deleted": {"$ne": True}
+            })
+            if not p_doc:
+                raise HTTPException(status_code=404, detail="Produto não encontrado")
+            item_total = round(item.quantity * p_doc["price"], 2)
+            subtotal += item_total
+            resolved_products.append({
+                "product_id": item.product_id,
+                "code": p_doc["code"],
+                "name": p_doc["name"],
+                "description": p_doc.get("description", ""),
+                "unit": p_doc.get("unit", "UN"),
+                "quantity": item.quantity,
+                "unit_price": p_doc["price"],
+                "total": item_total,
+                "item_type": "catalog"
+            })
+        else:
+            resolved_unit_price = item.unit_price if item.unit_price is not None else item.price
+            if not item.name or not item.name.strip() or resolved_unit_price is None or item.quantity is None:
+                raise HTTPException(status_code=422, detail="Item manual requer name, unit_price e quantity")
+            item_total = round(item.quantity * resolved_unit_price, 2)
+            subtotal += item_total
+            resolved_products.append({
+                "product_id": "",
+                "code": "",
+                "name": item.name.strip(),
+                "description": item.description or "",
+                "unit": item.unit or "UN",
+                "quantity": item.quantity,
+                "unit_price": resolved_unit_price,
+                "total": item_total,
+                "item_type": "manual"
+            })
+
+    estimated_value = round(subtotal, 2) if resolved_products else float(data.estimated_value or 0.0)
+    now = datetime.now(timezone.utc).isoformat()
+    # Validate probability
+    if data.probability is None:
+        probability = 0
+    else:
+        probability = int(data.probability)
+    if probability < 0 or probability > 100:
+        raise HTTPException(status_code=422, detail="Probability must be between 0 and 100")
+
+    # Validate client_id if provided
+    if data.client_id:
+        client = await db.clients.find_one({"id": data.client_id, "company_id": user["company_id"], "deleted": {"$ne": True}})
+        if not client:
+            raise HTTPException(status_code=404, detail="Cliente não encontrado")
+
+    # Validate proposal_id if provided and ensure no duplicate
+    if data.proposal_id:
+        prop = await db.proposals.find_one({"id": data.proposal_id, "deleted": {"$ne": True}})
+        if not prop or (prop.get("company_id") != user["company_id"] and prop.get("user_id") != user["id"]):
+            raise HTTPException(status_code=404, detail="Proposta não encontrada ou pertence a outra empresa")
+        # Check duplicate opportunity for same company+proposal
+        exists = await db.opportunities.find_one({"company_id": user["company_id"], "proposal_id": data.proposal_id, "deleted": {"$ne": True}})
+        if exists:
+            raise HTTPException(status_code=409, detail="Já existe uma oportunidade para esta proposta nesta empresa")
+
+    # Validate seller_id if provided
+    if data.seller_id:
+        seller = await db.users.find_one({"id": data.seller_id})
+        if not seller or seller.get("company_id") != user.get("company_id"):
+            raise HTTPException(status_code=404, detail="Vendedor não encontrado na empresa")
+        if user.get("role") == "seller" and data.seller_id != user.get("id"):
+            raise HTTPException(status_code=403, detail="Vendedor não pode atribuir outra pessoa")
+    client_id = await resolve_client_id(
+        company_id=user["company_id"],
+        name=data.client_name,
+        document=data.client_document,
+        phone=data.client_phone,
+        user_id=user["id"],
+        email=data.client_email or "",
+        company=data.client_company or "",
+        city=data.client_city or "",
+        state=data.client_state or "",
+        address=data.client_address or ""
+    )
+
+    oid = str(uuid.uuid4())
+    doc = {
+        "id": oid,
+        "user_id": user["id"],
+        "company_id": user["company_id"],
+        "proposal_id": data.proposal_id or "",
+        "seller_name": user.get("name") or "",
+        "seller_email": user.get("email") or "",
+        "seller_phone": user.get("phone") or "",
+        "seller_whatsapp": user.get("whatsapp") or "",
+        "seller_role": user.get("role") or "owner",
+        "seller_signature": user.get("signature_url") or user.get("seller_signature") or "",
+        "client_id": client_id,
+        "client_name": data.client_name,
+        "client_document": data.client_document,
+        "client_phone": data.client_phone,
+        "client_email": data.client_email or "",
+        "client_company": data.client_company or "",
+        "client_city": data.client_city or "",
+        "client_state": data.client_state or "",
+        "client_address": data.client_address or "",
+        "title": data.title,
+        "description": data.description or "",
+        "products": resolved_products,
+        "estimated_value": estimated_value,
+        "estimated_close_date": data.estimated_close_date or "",
+        "notes": data.notes or "",
+        "status": "OPEN",
+        "status_updated_at": now,
+        "lost_reason": "",
+        "temperature": data.temperature or "MORNO",
+        "probability": probability,
+        "next_action_date": data.next_action_date or None,
+        "next_action_description": data.next_action_description or "",
+        "created_at": now,
+        "updated_at": now,
+        "deleted": False,
+        "timeline": [
+            {
+                "id": str(uuid.uuid4()),
+                "type": "created",
+                "description": "Oportunidade criada.",
+                "created_at": now,
+                "created_by": user["id"],
+                "next_action_date": None,
+                "next_action_description": ""
+            }
+        ]
+    }
+    await db.opportunities.insert_one(doc)
+    doc.pop("_id", None)
+
+    await log_audit(
+        action="create",
+        entity_type="opportunity",
+        entity_id=oid,
+        old_value=None,
+        new_value=doc,
+        user_id=user["id"],
+        company_id=user["company_id"]
+    )
+    # automatic timeline event
+    await _push_opportunity_timeline(oid, "OPPORTUNITY_CREATED", "Oportunidade criada.", user.get("id"))
+    return normalize_opportunity(doc)
+
+
+@api_router.get("/opportunities")
+async def list_opportunities(
+    status: Optional[str] = None,
+    page: Optional[int] = Query(None, ge=1),
+    page_size: Optional[int] = Query(None, ge=1, le=100),
+    scope: Optional[str] = None,
+    seller_id: Optional[str] = None,
+    seller_name: Optional[str] = None,
+    search: Optional[str] = None,
+    user=Depends(get_current_user),
+):
+    role = user.get("role", "owner")
+    if role == "seller":
+        permission_filter = {"company_id": user["company_id"], "user_id": user["id"]}
+    else:
+        if scope in ("meu_time", "team"):
+            permission_filter = {
+                "company_id": user["company_id"],
+                "user_id": {"$ne": user["id"]}
+            }
+        elif scope == "vendedor" and seller_id:
+            permission_filter = {
+                "company_id": user["company_id"],
+                "user_id": seller_id
+            }
+        else:
+            permission_filter = {"$or": [{"company_id": user["company_id"]}, {"user_id": user["id"]}]}
+
+    filters = {"deleted": {"$ne": True}}
+    if status:
+        if status in ("OPEN", "WAITING", "HUMAN_ACTION", "WON", "LOST", "CANCELLED"):
+            filters["status"] = status
+
+    if seller_name:
+        filters["seller_name"] = {"$regex": seller_name, "$options": "i"}
+
+    if search:
+        search_regex = {"$regex": search, "$options": "i"}
+        filters["$or"] = [
+            {"client_name": search_regex},
+            {"client_document": search_regex},
+            {"client_phone": search_regex},
+            {"seller_name": search_regex},
+            {"title": search_regex},
+        ]
+
+    q = {"$and": [permission_filter, filters]}
+    if page is None and page_size is None:
+        cursor = db.opportunities.find(q, {"_id": 0}).sort("created_at", -1)
+        items = await cursor.to_list(1000)
+    elif page is not None and page_size is not None:
+        skip = (page - 1) * page_size
+        limit = page_size
+        cursor = db.opportunities.find(q, {"_id": 0}).sort("created_at", -1)
+        items = await cursor.skip(skip).limit(limit).to_list(limit)
+    else:
+        raise HTTPException(
+            status_code=422,
+            detail="Ambos os parâmetros 'page' e 'page_size' devem ser informados."
+        )
+    return [normalize_opportunity(item) for item in items]
+
+
+@api_router.get("/opportunities/{oid}")
+async def get_opportunity(oid: str, user=Depends(get_current_user)):
+    role = user.get("role", "owner")
+    doc = await db.opportunities.find_one({"id": oid, "deleted": {"$ne": True}}, {"_id": 0})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Oportunidade não encontrada")
+
+    belongs_to_company = doc.get("company_id") == user["company_id"] or doc.get("user_id") == user["id"]
+    if not belongs_to_company:
+        raise HTTPException(status_code=404, detail="Oportunidade não encontrada")
+
+    if role == "seller" and doc.get("user_id") != user["id"]:
+        raise HTTPException(status_code=404, detail="Oportunidade não encontrada")
+
+    return normalize_opportunity(doc)
+
+
+@api_router.put("/opportunities/{oid}")
+async def update_opportunity(oid: str, data: OpportunityUpdateIn, user=Depends(get_current_user)):
+    role = user.get("role", "owner")
+    doc = await db.opportunities.find_one({"id": oid, "deleted": {"$ne": True}})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Oportunidade não encontrada")
+
+    belongs_to_company = doc.get("company_id") == user["company_id"] or doc.get("user_id") == user["id"]
+    if not belongs_to_company:
+        raise HTTPException(status_code=404, detail="Oportunidade não encontrada")
+
+    if role == "seller" and doc.get("user_id") != user["id"]:
+        raise HTTPException(status_code=404, detail="Oportunidade não encontrada")
+
+    resolved_products = []
+    subtotal = 0.0
+    for item in data.products or []:
+        if item.product_id and item.product_id.strip():
+            p_doc = await db.products.find_one({
+                "id": item.product_id,
+                "company_id": user["company_id"],
+                "active": True,
+                "deleted": {"$ne": True}
+            })
+            if not p_doc:
+                raise HTTPException(status_code=404, detail="Produto não encontrado")
+            item_total = round(item.quantity * p_doc["price"], 2)
+            subtotal += item_total
+            resolved_products.append({
+                "product_id": item.product_id,
+                "code": p_doc["code"],
+                "name": p_doc["name"],
+                "description": p_doc.get("description", ""),
+                "unit": p_doc.get("unit", "UN"),
+                "quantity": item.quantity,
+                "unit_price": p_doc["price"],
+                "total": item_total,
+                "item_type": "catalog"
+            })
+        else:
+            resolved_unit_price = item.unit_price if item.unit_price is not None else item.price
+            if not item.name or not item.name.strip() or resolved_unit_price is None or item.quantity is None:
+                raise HTTPException(status_code=422, detail="Item manual requer name, unit_price e quantity")
+            item_total = round(item.quantity * resolved_unit_price, 2)
+            subtotal += item_total
+            resolved_products.append({
+                "product_id": "",
+                "code": "",
+                "name": item.name.strip(),
+                "description": item.description or "",
+                "unit": item.unit or "UN",
+                "quantity": item.quantity,
+                "unit_price": resolved_unit_price,
+                "total": item_total,
+                "item_type": "manual"
+            })
+
+    estimated_value = round(subtotal, 2) if resolved_products else float(data.estimated_value or 0.0)
+    now = datetime.now(timezone.utc).isoformat()
+    # Validate probability
+    if data.probability is not None:
+        prob = int(data.probability)
+        if prob < 0 or prob > 100:
+            raise HTTPException(status_code=422, detail="Probability must be between 0 and 100")
+
+    # Validate client_id if provided
+    if data.client_id:
+        client = await db.clients.find_one({"id": data.client_id, "company_id": user["company_id"], "deleted": {"$ne": True}})
+        if not client:
+            raise HTTPException(status_code=404, detail="Cliente não encontrado")
+
+    # Validate proposal_id if provided (and check duplicates)
+    if data.proposal_id:
+        prop = await db.proposals.find_one({"id": data.proposal_id, "deleted": {"$ne": True}})
+        if not prop or (prop.get("company_id") != user["company_id"] and prop.get("user_id") != user["id"]):
+            raise HTTPException(status_code=404, detail="Proposta não encontrada ou pertence a outra empresa")
+        # if changing proposal_id, ensure no duplicate
+        if data.proposal_id != doc.get("proposal_id"):
+            exists = await db.opportunities.find_one({"company_id": user["company_id"], "proposal_id": data.proposal_id, "deleted": {"$ne": True}})
+            if exists:
+                raise HTTPException(status_code=409, detail="Já existe uma oportunidade para esta proposta nesta empresa")
+
+    # Validate seller_id if provided
+    if data.seller_id:
+        seller = await db.users.find_one({"id": data.seller_id})
+        if not seller or seller.get("company_id") != user.get("company_id"):
+            raise HTTPException(status_code=404, detail="Vendedor não encontrado na empresa")
+        if user.get("role") == "seller" and data.seller_id != user.get("id"):
+            raise HTTPException(status_code=403, detail="Vendedor não pode atribuir outra pessoa")
+
+    # Resolve client_id (fallback to existing behavior using name/document)
+    client_id = await resolve_client_id(
+        company_id=user["company_id"],
+        name=data.client_name,
+        document=data.client_document,
+        phone=data.client_phone,
+        user_id=user["id"],
+        email=data.client_email or "",
+        company=data.client_company or "",
+        city=data.client_city or "",
+        state=data.client_state or "",
+        address=data.client_address or ""
+    )
+
+    payload = data.model_dump(exclude_none=True)
+    update = {
+        "client_id": client_id,
+        "proposal_id": payload.get("proposal_id", doc.get("proposal_id", "")) or "",
+        "client_name": payload.get("client_name", doc.get("client_name", "")),
+        "client_document": payload.get("client_document", doc.get("client_document", "")),
+        "client_phone": payload.get("client_phone", doc.get("client_phone", "")),
+        "client_email": payload.get("client_email", doc.get("client_email", "")) or "",
+        "client_company": payload.get("client_company", doc.get("client_company", "")) or "",
+        "client_city": payload.get("client_city", doc.get("client_city", "")) or "",
+        "client_state": payload.get("client_state", doc.get("client_state", "")) or "",
+        "client_address": payload.get("client_address", doc.get("client_address", "")) or "",
+        "title": payload.get("title", doc.get("title", "")),
+        "description": payload.get("description", doc.get("description", "")) or "",
+        "products": resolved_products if payload.get("products") is not None else doc.get("products", []),
+        "estimated_value": estimated_value if payload.get("estimated_value") is not None or payload.get("products") is not None else doc.get("estimated_value", 0.0),
+        "estimated_close_date": payload.get("estimated_close_date", doc.get("estimated_close_date", "")) or "",
+        "notes": payload.get("notes", doc.get("notes", "")) or "",
+        "temperature": payload.get("temperature", doc.get("temperature", "MORNO")) or "MORNO",
+        "next_action_date": payload.get("next_action_date", doc.get("next_action_date")) or None,
+        "next_action_description": payload.get("next_action_description", doc.get("next_action_description", "")) or "",
+        "probability": int(payload["probability"]) if "probability" in payload else doc.get("probability", 0),
+        "updated_at": now,
+    }
+    await db.opportunities.update_one({"id": oid}, {"$set": update})
+    updated_doc = await db.opportunities.find_one({"id": oid}, {"_id": 0})
+
+    await log_audit(
+        action="update",
+        entity_type="opportunity",
+        entity_id=oid,
+        old_value=doc,
+        new_value=updated_doc,
+        user_id=user["id"],
+        company_id=user["company_id"]
+    )
+    # If temperature changed, add timeline event
+    if doc.get("temperature") != updated_doc.get("temperature"):
+        await _push_opportunity_timeline(oid, "TEMPERATURE_CHANGED", f"Temperatura alterada para {updated_doc.get('temperature')}", user.get("id"), {"old": doc.get("temperature"), "new": updated_doc.get("temperature")})
+    return normalize_opportunity(updated_doc)
+
+
+@api_router.patch("/opportunities/{oid}/status")
+async def change_opportunity_status(oid: str, data: OpportunityStatusUpdate, user=Depends(get_current_user)):
+    role = user.get("role", "owner")
+    doc = await db.opportunities.find_one({"id": oid, "deleted": {"$ne": True}})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Oportunidade não encontrada")
+
+    belongs_to_company = doc.get("company_id") == user["company_id"] or doc.get("user_id") == user["id"]
+    if not belongs_to_company:
+        raise HTTPException(status_code=404, detail="Oportunidade não encontrada")
+
+    if role == "seller" and doc.get("user_id") != user["id"]:
+        raise HTTPException(status_code=404, detail="Oportunidade não encontrada")
+
+    current_status = doc.get("status", "aberto")
+    target_status = data.status
+    # Simple rules: do not allow reopening WON/LOST
+    if current_status in ("WON", "LOST") and target_status != current_status:
+        raise HTTPException(status_code=400, detail="Não é permitido reabrir uma oportunidade já ganha/perdida")
+
+    if target_status == "LOST" and not (data.lost_reason and data.lost_reason.strip()):
+        raise HTTPException(status_code=400, detail="Motivo da perda é obrigatório")
+
+    now = datetime.now(timezone.utc).isoformat()
+    update = {
+        "status": target_status,
+        "lost_reason": data.lost_reason or "" if target_status == "LOST" else "",
+        "status_updated_at": now,
+        "updated_at": now,
+    }
+    await db.opportunities.update_one({"id": oid}, {"$set": update})
+    updated_doc = await db.opportunities.find_one({"id": oid}, {"_id": 0})
+
+    await log_audit(
+        action="change_status",
+        entity_type="opportunity",
+        entity_id=oid,
+        old_value=doc,
+        new_value=updated_doc,
+        user_id=user["id"],
+        company_id=user["company_id"]
+    )
+    # Timeline event
+    await _push_opportunity_timeline(oid, "STATUS_CHANGED", f"Status alterado para {target_status}", user.get("id"), {"old": doc.get("status"), "new": target_status})
+    # closed_at handling
+    if target_status == "WON" or target_status == "LOST":
+        closed_at = datetime.now(timezone.utc).isoformat()
+        await db.opportunities.update_one({"id": oid}, {"$set": {"closed_at": closed_at, "updated_at": closed_at}})
+        updated_doc = await db.opportunities.find_one({"id": oid}, {"_id": 0})
+        if target_status == "WON":
+            await _push_opportunity_timeline(oid, "SALE_WON", "Oportunidade marcada como ganha.", user.get("id"))
+        else:
+            await _push_opportunity_timeline(oid, "SALE_LOST", "Oportunidade marcada como perdida.", user.get("id"))
+    return normalize_opportunity(updated_doc)
+
+
+@api_router.patch("/opportunities/{oid}/stage")
+async def change_opportunity_stage(oid: str, data: OpportunityStageUpdate, user=Depends(get_current_user)):
+    role = user.get("role", "owner")
+    doc = await db.opportunities.find_one({"id": oid, "deleted": {"$ne": True}})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Oportunidade não encontrada")
+
+    belongs_to_company = doc.get("company_id") == user["company_id"] or doc.get("user_id") == user["id"]
+    if not belongs_to_company:
+        raise HTTPException(status_code=404, detail="Oportunidade não encontrada")
+
+    if role == "seller" and doc.get("user_id") != user["id"]:
+        raise HTTPException(status_code=404, detail="Oportunidade não encontrada")
+
+    current_stage = doc.get("stage") or "NOVO"
+    target_stage = data.stage
+    if current_stage == target_stage:
+        return normalize_opportunity(doc)
+
+    now = datetime.now(timezone.utc).isoformat()
+    await db.opportunities.update_one({"id": oid}, {"$set": {"stage": target_stage, "stage_updated_at": now, "updated_at": now}})
+    updated_doc = await db.opportunities.find_one({"id": oid}, {"_id": 0})
+
+    await log_audit(
+        action="change_stage",
+        entity_type="opportunity",
+        entity_id=oid,
+        old_value=doc,
+        new_value=updated_doc,
+        user_id=user["id"],
+        company_id=user["company_id"]
+    )
+
+    await _push_opportunity_timeline(oid, "STAGE_CHANGED", f"Estágio alterado para {target_stage}", user.get("id"), {"old": current_stage, "new": target_stage})
+    return normalize_opportunity(updated_doc)
+
+
+@api_router.post("/opportunities/{oid}/timeline")
+async def add_opportunity_timeline_event(oid: str, data: TimelineInput, user=Depends(get_current_user)):
+    role = user.get("role", "owner")
+    company_id = user.get("company_id")
+    q = {"id": oid, "deleted": {"$ne": True}}
+    if role == "seller":
+        q["user_id"] = user["id"]
+    else:
+        if company_id:
+            q["company_id"] = company_id
+    doc = await db.opportunities.find_one(q)
+    if not doc:
+        raise HTTPException(status_code=404, detail="Oportunidade não encontrada")
+
+    allowed_types = ["call", "whatsapp", "visit", "meeting", "negotiation", "note"]
+    if data.type not in allowed_types:
+        raise HTTPException(status_code=400, detail=f"Tipo de interação inválido. Permitidos: {', '.join(allowed_types)}")
+
+    now = datetime.now(timezone.utc).isoformat()
+    timeline_event = {
+        "id": str(uuid.uuid4()),
+        "type": data.type,
+        "description": data.description.strip(),
+        "created_at": now,
+        "created_by": user.get("name") or user["id"],
+        "next_action_date": data.next_action_date or None,
+        "next_action_description": data.next_action_description or ""
+    }
+    update_ops = {
+        "$push": {"timeline": timeline_event},
+        "$set": {
+            "updated_at": now,
+            "next_action_date": data.next_action_date or None,
+            "next_action_description": data.next_action_description or ""
+        }
+    }
+    if data.temperature:
+        if data.temperature.upper() not in ["FRIO", "MORNO", "QUENTE", "MUITO_QUENTE"]:
+            raise HTTPException(status_code=400, detail="Temperatura inválida. Permitidos: FRIO, MORNO, QUENTE, MUITO_QUENTE")
+        update_ops["$set"]["temperature"] = data.temperature.upper()
+
+    await db.opportunities.update_one({"id": oid}, update_ops)
+    updated_doc = await db.opportunities.find_one({"id": oid}, {"_id": 0})
+
+    await log_audit(
+        action="add_timeline",
+        entity_type="opportunity",
+        entity_id=oid,
+        old_value=doc,
+        new_value=updated_doc,
+        user_id=user["id"],
+        company_id=company_id
+    )
+    # also push standardized event
+    await _push_opportunity_timeline(oid, data.type.upper(), data.description.strip(), user.get("id"))
+    return normalize_opportunity(updated_doc)
+
+
+@api_router.patch("/opportunities/{oid}/temperature")
+async def update_opportunity_temperature(oid: str, data: dict, user=Depends(get_current_user)):
+    role = user.get("role", "owner")
+    company_id = user.get("company_id")
+    temperature = data.get("temperature")
+    normalized_temperature = temperature.upper() if isinstance(temperature, str) else temperature
+    if not normalized_temperature or normalized_temperature not in ["FRIO", "MORNO", "QUENTE", "MUITO_QUENTE"]:
+        raise HTTPException(status_code=400, detail="Temperatura inválida. Permitidos: FRIO, MORNO, QUENTE, MUITO_QUENTE")
+
+    q = {"id": oid, "deleted": {"$ne": True}}
+    if role == "seller":
+        q["user_id"] = user["id"]
+    else:
+        if company_id:
+            q["company_id"] = company_id
+
+    doc = await db.opportunities.find_one(q)
+    if not doc:
+        raise HTTPException(status_code=404, detail="Oportunidade não encontrada")
+
+    now = datetime.now(timezone.utc).isoformat()
+    await db.opportunities.update_one(
+        {"id": oid},
+        {"$set": {"temperature": normalized_temperature, "updated_at": now}}
+    )
+
+    updated_doc = await db.opportunities.find_one({"id": oid}, {"_id": 0})
+    await log_audit(
+        action="update_temperature",
+        entity_type="opportunity",
+        entity_id=oid,
+        old_value=doc,
+        new_value=updated_doc,
+        user_id=user["id"],
+        company_id=company_id
+    )
+    # Timeline event
+    await _push_opportunity_timeline(oid, "TEMPERATURE_CHANGED", f"Temperatura alterada para {temperature}", user.get("id"), {"old": doc.get("temperature"), "new": temperature})
+    return normalize_opportunity(updated_doc)
+
+
+@api_router.delete("/opportunities/{oid}")
+async def delete_opportunity(oid: str, user=Depends(get_current_user)):
+    role = user.get("role", "owner")
+    doc = await db.opportunities.find_one({"id": oid, "deleted": {"$ne": True}})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Oportunidade não encontrada")
+
+    belongs_to_company = doc.get("company_id") == user["company_id"] or doc.get("user_id") == user["id"]
+    if not belongs_to_company:
+        raise HTTPException(status_code=404, detail="Oportunidade não encontrada")
+
+    if role == "seller" and doc.get("user_id") != user["id"]:
+        raise HTTPException(status_code=404, detail="Oportunidade não encontrada")
+
+    now = datetime.now(timezone.utc).isoformat()
+    await db.opportunities.update_one(
+        {"id": oid},
+        {"$set": {
+            "deleted": True,
+            "deleted_at": now,
+            "deleted_by": user["id"]
+        }}
+    )
+    updated_doc = await db.opportunities.find_one({"id": oid}, {"_id": 0})
+    await log_audit(
+        action="delete",
+        entity_type="opportunity",
+        entity_id=oid,
+        old_value=doc,
+        new_value=updated_doc,
+        user_id=user["id"],
+        company_id=user["company_id"]
+    )
+    return {"ok": True}
+
 
 @api_router.get("/public/proposals/{pid}")
 async def get_public_proposal(pid: str, request: Request):
     doc = await db.proposals.find_one({"id": pid, "deleted": {"$ne": True}}, {"_id": 0})
     if not doc:
         raise HTTPException(status_code=404, detail="Proposta não encontrada")
-        
+
     client_ip = request.client.host if request.client else ""
     x_forwarded_for = request.headers.get("x-forwarded-for")
     if x_forwarded_for:
         client_ip = x_forwarded_for.split(",")[0].strip()
-        
+
     user_agent = request.headers.get("user-agent", "")
     now = datetime.now(timezone.utc).isoformat()
-    
+
     new_event = {
         "id": str(uuid.uuid4()),
         "type": "viewed",
@@ -2410,19 +3627,19 @@ async def get_public_proposal(pid: str, request: Request):
             }
         }
     )
-    
+
     doc["proposal_viewed_at"] = now
     doc["proposal_viewed_ip"] = client_ip
     doc["proposal_viewed_ua"] = user_agent
     if "timeline" not in doc or doc["timeline"] is None:
         doc["timeline"] = []
     doc["timeline"].append(new_event)
-    
+
     company_id = doc.get("company_id")
     company = None
     if company_id:
         company = await db.companies.find_one({"id": company_id}, {"_id": 0})
-        
+
     return {
         "proposal": normalize_proposal(doc),
         "company": company or {}
@@ -2435,15 +3652,15 @@ async def get_public_proposal_by_code(code: str, request: Request):
     doc = await db.proposals.find_one({"public_code": code_upper, "deleted": {"$ne": True}}, {"_id": 0})
     if not doc:
         raise HTTPException(status_code=404, detail="Proposta não encontrada")
-        
+
     client_ip = request.client.host if request.client else ""
     x_forwarded_for = request.headers.get("x-forwarded-for")
     if x_forwarded_for:
         client_ip = x_forwarded_for.split(",")[0].strip()
-        
+
     user_agent = request.headers.get("user-agent", "")
     now = datetime.now(timezone.utc).isoformat()
-    
+
     new_event = {
         "id": str(uuid.uuid4()),
         "type": "viewed",
@@ -2467,19 +3684,19 @@ async def get_public_proposal_by_code(code: str, request: Request):
             }
         }
     )
-    
+
     doc["proposal_viewed_at"] = now
     doc["proposal_viewed_ip"] = client_ip
     doc["proposal_viewed_ua"] = user_agent
     if "timeline" not in doc or doc["timeline"] is None:
         doc["timeline"] = []
     doc["timeline"].append(new_event)
-    
+
     company_id = doc.get("company_id")
     company = None
     if company_id:
         company = await db.companies.find_one({"id": company_id}, {"_id": 0})
-        
+
     return {
         "proposal": normalize_proposal(doc),
         "company": company or {}
@@ -2517,6 +3734,2303 @@ async def upload_image(
             status_code=500,
             detail=str(e),
         )
+
+
+# ---------- Import Engine (Etapa 1) ----------
+@api_router.post("/imports")
+async def upload_import(
+    file: UploadFile = File(...),
+    user=Depends(get_current_user),
+):
+    company_id = _safe_company_id(user)
+    filename = sanitize_filename(file.filename or "import")
+    extension = Path(filename).suffix.lower()
+    if extension not in ALLOWED_IMPORT_EXTENSIONS:
+        raise HTTPException(status_code=400, detail="Tipo de arquivo não suportado. Use CSV ou XLSX.")
+
+    content = await file.read()
+    if not content or len(content) == 0:
+        raise HTTPException(status_code=400, detail="Arquivo vazio.")
+
+    if len(content) > MAX_IMPORT_FILE_SIZE_BYTES:
+        raise HTTPException(status_code=413, detail="Arquivo excedeu o tamanho máximo permitido.")
+
+    file_type = ALLOWED_IMPORT_EXTENSIONS.get(extension, "UNKNOWN")
+    checksum = sha256_bytes(content)
+
+    existing = await db.import_batches.find_one({"company_id": company_id, "checksum": checksum, "deleted": {"$ne": True}})
+    if existing:
+        return {
+            "message": "Arquivo anteriormente importado.",
+            "import_id": existing["id"],
+            "duplicate": True,
+            "status": existing["status"],
+        }
+
+    storage_ref = OriginalFileStorage.save(company_id, filename, content)
+    now = datetime.now(timezone.utc).isoformat()
+    batch_id = str(uuid.uuid4())
+    batch_doc = {
+        "id": batch_id,
+        "company_id": company_id,
+        "user_id": user["id"],
+        "filename": filename,
+        "file_type": file_type,
+        "file_size": len(content),
+        "source_type": file_type,
+        "checksum": checksum,
+        "original_storage_ref": storage_ref,
+        "status": "UPLOADED",
+        "profile_id": None,
+        "profile_version": None,
+        "records_detected": 0,
+        "records_extracted": 0,
+        "records_imported": 0,
+        "records_updated": 0,
+        "records_skipped": 0,
+        "records_with_errors": 0,
+        "parser_version": IMPORT_PARSER_VERSION,
+        "jobs": [
+            {
+                "job_type": "UPLOAD",
+                "status": "COMPLETED",
+                "started_at": now,
+                "finished_at": now,
+                "records_processed": 0,
+                "errors": [],
+            },
+            {
+                "job_type": "VALIDATING",
+                "status": "COMPLETED",
+                "started_at": now,
+                "finished_at": now,
+                "records_processed": 0,
+                "errors": [],
+            },
+        ],
+        "created_at": now,
+        "updated_at": now,
+        "deleted": False,
+    }
+
+    await db.import_batches.insert_one(batch_doc)
+    await log_audit(
+        action="IMPORT_CREATED",
+        entity_type="import_batch",
+        entity_id=batch_id,
+        old_value=None,
+        new_value=batch_doc,
+        user_id=user["id"],
+        company_id=company_id,
+    )
+
+    try:
+        raw_records, total_rows = _extract_raw_records(storage_ref, file_type)
+        records_detected = max(len(raw_records), 0)
+        await db.raw_records.delete_many({"import_batch_id": batch_id, "company_id": company_id})
+        for index, rec in enumerate(raw_records, start=1):
+            raw_doc = {
+                "id": str(uuid.uuid4()),
+                "import_batch_id": batch_id,
+                "company_id": company_id,
+                "source_file": filename,
+                "source_sheet": rec["source_sheet"],
+                "source_row": rec["source_row"],
+                "original_record_json": rec["original_record_json"],
+                "raw_metadata": rec["raw_metadata"],
+                "record_status": "EXTRACTED",
+                "created_at": now,
+            }
+            await db.raw_records.insert_one(raw_doc)
+
+        await db.import_batches.update_one(
+            {"id": batch_id},
+            {"$set": {
+                "status": "COMPLETED",
+                "records_detected": records_detected,
+                "records_extracted": records_detected,
+                "records_imported": 0,
+                "records_updated": 0,
+                "records_skipped": 0,
+                "records_with_errors": 0,
+                "updated_at": now,
+                "jobs": [
+                    {
+                        "job_type": "UPLOAD",
+                        "status": "COMPLETED",
+                        "started_at": batch_doc["created_at"],
+                        "finished_at": now,
+                        "records_processed": records_detected,
+                        "errors": [],
+                    },
+                    {
+                        "job_type": "VALIDATING",
+                        "status": "COMPLETED",
+                        "started_at": now,
+                        "finished_at": now,
+                        "records_processed": records_detected,
+                        "errors": [],
+                    },
+                    {
+                        "job_type": "RAW_EXTRACTION",
+                        "status": "COMPLETED",
+                        "started_at": now,
+                        "finished_at": now,
+                        "records_processed": records_detected,
+                        "errors": [],
+                    },
+                    {
+                        "job_type": "COMPLETED",
+                        "status": "COMPLETED",
+                        "started_at": now,
+                        "finished_at": now,
+                        "records_processed": records_detected,
+                        "errors": [],
+                    },
+                ],
+            }},
+        )
+
+        await log_audit(
+            action="IMPORT_RAW_EXTRACTED",
+            entity_type="import_batch",
+            entity_id=batch_id,
+            old_value={"records_detected": 0},
+            new_value={"records_extracted": records_detected},
+            user_id=user["id"],
+            company_id=company_id,
+        )
+
+        final_batch = await db.import_batches.find_one({"id": batch_id}, {"_id": 0})
+        return {
+            "import_id": batch_id,
+            "filename": filename,
+            "status": "COMPLETED",
+            "records_detected": records_detected,
+            "records_extracted": records_detected,
+            "records_skipped": 0,
+            "records_with_errors": 0,
+            "import_batch": final_batch,
+        }
+    except Exception as exc:
+        await db.import_batches.update_one(
+            {"id": batch_id},
+            {"$set": {"status": "FAILED", "updated_at": now, "records_with_errors": 1}},
+        )
+        await log_audit(
+            action="IMPORT_FAILED",
+            entity_type="import_batch",
+            entity_id=batch_id,
+            old_value={"status": "UPLOADED"},
+            new_value={"status": "FAILED", "error": str(exc)},
+            user_id=user["id"],
+            company_id=company_id,
+        )
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@api_router.get("/imports")
+async def list_import_batches(user=Depends(get_current_user)):
+    company_id = _safe_company_id(user)
+    batches = await db.import_batches.find({"company_id": company_id, "deleted": {"$ne": True}}, {"_id": 0}).sort("created_at", -1).to_list(1000)
+    return batches
+
+
+@api_router.get("/imports/{batch_id}")
+async def get_import_batch(batch_id: str, user=Depends(get_current_user)):
+    company_id = _safe_company_id(user)
+    batch = await db.import_batches.find_one({"id": batch_id, "company_id": company_id, "deleted": {"$ne": True}}, {"_id": 0})
+    if not batch:
+        raise HTTPException(status_code=404, detail="Importação não encontrada")
+    return batch
+
+
+@api_router.get("/imports/{batch_id}/report")
+async def get_import_report(batch_id: str, user=Depends(get_current_user)):
+    company_id = _safe_company_id(user)
+    batch = await db.import_batches.find_one({"id": batch_id, "company_id": company_id, "deleted": {"$ne": True}}, {"_id": 0})
+    if not batch:
+        raise HTTPException(status_code=404, detail="Importação não encontrada")
+    raw_records = await db.raw_records.find({"company_id": company_id, "import_batch_id": batch_id}, {"_id": 0}).to_list(1000)
+    return _build_import_report(batch, raw_records)
+
+
+@api_router.get("/imports/{batch_id}/raw")
+async def get_import_raw(
+    batch_id: str,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(50, ge=1, le=200),
+    user=Depends(get_current_user),
+):
+    company_id = _safe_company_id(user)
+    batch = await db.import_batches.find_one({"id": batch_id, "company_id": company_id, "deleted": {"$ne": True}}, {"_id": 0})
+    if not batch:
+        raise HTTPException(status_code=404, detail="Importação não encontrada")
+
+    skip = (page - 1) * page_size
+    raw_records = await db.raw_records.find({"company_id": company_id, "import_batch_id": batch_id}, {"_id": 0}).sort("source_row", 1).skip(skip).limit(page_size).to_list(page_size)
+    total = await db.raw_records.count_documents({"company_id": company_id, "import_batch_id": batch_id})
+    return {
+        "batch_id": batch_id,
+        "page": page,
+        "page_size": page_size,
+        "total": total,
+        "items": raw_records,
+    }
+
+
+def _get_structure_profile_filter(user: dict, batch_id: str) -> dict:
+    return {"company_id": _safe_company_id(user), "import_batch_id": batch_id}
+
+
+@api_router.post("/imports/{batch_id}/analyze")
+async def analyze_import_structure(batch_id: str, user=Depends(get_current_user)):
+    """Analyze existing RawRecords without assigning business meanings."""
+    ensure_db_for_current_loop()
+    company_id = _safe_company_id(user)
+    batch = await db.import_batches.find_one(
+        {"id": batch_id, "company_id": company_id, "deleted": {"$ne": True}},
+        {"_id": 0},
+    )
+    if not batch:
+        raise HTTPException(status_code=404, detail="Importação não encontrada")
+
+    existing = await db.import_structure_profiles.find_one(
+        {**_get_structure_profile_filter(user, batch_id), "analyzer_version": ANALYZER_VERSION},
+        {"_id": 0},
+    )
+    if existing:
+        return existing
+
+    await log_audit(
+        action="STRUCTURE_ANALYSIS_STARTED",
+        entity_type="import_structure_profile",
+        entity_id=batch_id,
+        old_value=None,
+        new_value={"import_batch_id": batch_id, "analyzer_version": ANALYZER_VERSION},
+        user_id=user["id"],
+        company_id=company_id,
+    )
+    now = datetime.now(timezone.utc).isoformat()
+    try:
+        raw_records = await db.raw_records.find(
+            {"company_id": company_id, "import_batch_id": batch_id},
+            {"_id": 0},
+        ).sort("source_row", 1).to_list(100000)
+        sheet_entries = []
+        storage_ref = batch.get("original_storage_ref")
+        if storage_ref and Path(storage_ref).exists():
+            if batch.get("file_type") == "XLSX":
+                sheet_entries = _parse_xlsx_file(storage_ref)
+            else:
+                sheet_entries = _extract_csv_records(storage_ref)
+        file_summary = {
+            "filename": batch.get("filename", ""),
+            "file_type": batch.get("file_type", "UNKNOWN"),
+            "file_size": batch.get("file_size", 0),
+            "checksum": batch.get("checksum", ""),
+            "sheets_count": len(sheet_entries) or len({record.get("source_sheet") for record in raw_records}),
+        }
+        profile = analyze_structure(file_summary, raw_records, sheet_entries)
+        profile.update({
+            "id": str(uuid.uuid4()),
+            "company_id": company_id,
+            "import_batch_id": batch_id,
+            "created_at": now,
+            "updated_at": now,
+        })
+        await db.import_structure_profiles.insert_one(profile)
+        await db.import_batches.update_one(
+            {"id": batch_id, "company_id": company_id},
+            {"$set": {"profile_id": profile["id"], "profile_version": ANALYZER_VERSION, "updated_at": now}},
+        )
+        await log_audit(
+            action="STRUCTURE_ANALYSIS_COMPLETED",
+            entity_type="import_structure_profile",
+            entity_id=profile["id"],
+            old_value=None,
+            new_value={"import_batch_id": batch_id, "analyzer_version": ANALYZER_VERSION},
+            user_id=user["id"],
+            company_id=company_id,
+        )
+        return profile
+    except Exception as exc:
+        await log_audit(
+            action="STRUCTURE_ANALYSIS_FAILED",
+            entity_type="import_structure_profile",
+            entity_id=batch_id,
+            old_value=None,
+            new_value={"error": str(exc)},
+            user_id=user["id"],
+            company_id=company_id,
+        )
+        raise HTTPException(status_code=400, detail="Não foi possível analisar a estrutura") from exc
+
+
+@api_router.get("/imports/{batch_id}/structure")
+async def get_import_structure(batch_id: str, user=Depends(get_current_user)):
+    company_id = _safe_company_id(user)
+    profile = await db.import_structure_profiles.find_one(
+        _get_structure_profile_filter(user, batch_id), {"_id": 0},
+        sort=[("created_at", -1)],
+    )
+    if not profile:
+        raise HTTPException(status_code=404, detail="Perfil estrutural não encontrado")
+    return profile
+
+
+@api_router.get("/imports/{batch_id}/structure/sheets/{sheet_name}")
+async def get_import_structure_sheet(batch_id: str, sheet_name: str, user=Depends(get_current_user)):
+    profile = await db.import_structure_profiles.find_one(
+        _get_structure_profile_filter(user, batch_id), {"_id": 0},
+        sort=[("created_at", -1)],
+    )
+    if not profile:
+        raise HTTPException(status_code=404, detail="Perfil estrutural não encontrado")
+    for sheet in profile.get("sheets", []):
+        if sheet.get("sheet_name") == sheet_name:
+            return sheet
+    raise HTTPException(status_code=404, detail="Aba não encontrada")
+
+
+def _get_mapping_candidates_filter(user: dict, batch_id: str) -> dict:
+    return {"company_id": _safe_company_id(user), "import_batch_id": batch_id}
+
+
+@api_router.post("/imports/{batch_id}/mapping-candidates")
+async def analyze_import_mapping_candidates(batch_id: str, user=Depends(get_current_user)):
+    """Generate ranked mapping suggestions without applying any mapping."""
+    ensure_db_for_current_loop()
+    company_id = _safe_company_id(user)
+    profile = await db.import_structure_profiles.find_one(
+        {"company_id": company_id, "import_batch_id": batch_id},
+        {"_id": 0},
+        sort=[("created_at", -1)],
+    )
+    if not profile:
+        raise HTTPException(status_code=404, detail="Perfil estrutural não encontrado")
+
+    existing = await db.mapping_candidates.find_one(
+        {**_get_mapping_candidates_filter(user, batch_id), "mapping_engine_version": MAPPING_ENGINE_VERSION},
+        {"_id": 0},
+    )
+    if existing:
+        return existing
+
+    await log_audit(
+        action="MAPPING_ANALYSIS_STARTED",
+        entity_type="mapping_candidates",
+        entity_id=batch_id,
+        old_value=None,
+        new_value={"structure_profile_id": profile.get("id"), "mapping_engine_version": MAPPING_ENGINE_VERSION},
+        user_id=user["id"],
+        company_id=company_id,
+    )
+    now = datetime.now(timezone.utc).isoformat()
+    try:
+        result = generate_candidate_mappings(profile)
+        document = {
+            "id": str(uuid.uuid4()),
+            "company_id": company_id,
+            "import_batch_id": batch_id,
+            "structure_profile_id": profile.get("id"),
+            "mapping_engine_version": MAPPING_ENGINE_VERSION,
+            "candidates": result.get("sources", []),
+            "warnings": result.get("warnings", []),
+            "global_statistics": result.get("global_statistics", {}),
+            "created_at": now,
+            "updated_at": now,
+        }
+        await db.mapping_candidates.insert_one(document)
+        await log_audit(
+            action="MAPPING_ANALYSIS_COMPLETED",
+            entity_type="mapping_candidates",
+            entity_id=document["id"],
+            old_value=None,
+                new_value={"import_batch_id": batch_id, "source_fields": len(document["candidates"])},
+            user_id=user["id"],
+            company_id=company_id,
+        )
+        return document
+    except Exception as exc:
+        await log_audit(
+            action="MAPPING_ANALYSIS_FAILED",
+            entity_type="mapping_candidates",
+            entity_id=batch_id,
+            old_value=None,
+            new_value={"error": str(exc)},
+            user_id=user["id"],
+            company_id=company_id,
+        )
+        raise HTTPException(status_code=400, detail="Não foi possível gerar candidatos de mapping") from exc
+
+
+@api_router.get("/imports/{batch_id}/mapping-candidates")
+async def get_import_mapping_candidates(batch_id: str, user=Depends(get_current_user)):
+    document = await db.mapping_candidates.find_one(
+        _get_mapping_candidates_filter(user, batch_id),
+        {"_id": 0},
+        sort=[("created_at", -1)],
+    )
+    if not document:
+        raise HTTPException(status_code=404, detail="Candidatos de mapping não encontrados")
+    return document
+
+
+@api_router.get("/imports/{batch_id}/mapping-candidates/{source_field}")
+async def get_import_mapping_candidates_for_field(
+    batch_id: str,
+    source_field: str,
+    sheet_name: Optional[str] = Query(None),
+    user=Depends(get_current_user),
+):
+    document = await db.mapping_candidates.find_one(
+        _get_mapping_candidates_filter(user, batch_id),
+        {"_id": 0},
+        sort=[("created_at", -1)],
+    )
+    if not document:
+        raise HTTPException(status_code=404, detail="Candidatos de mapping não encontrados")
+    matches = [
+        source for source in document.get("candidates", document.get("sources", []))
+        if source.get("source_field", {}).get("source_name") == source_field
+        and (sheet_name is None or source.get("source_field", {}).get("sheet_name") == sheet_name)
+    ]
+    if not matches:
+        raise HTTPException(status_code=404, detail="Campo de origem não encontrado")
+    return {"batch_id": batch_id, "source_field": source_field, "matches": matches}
+
+
+def _get_mapping_decisions_filter(user: dict, batch_id: str) -> dict:
+    return {"company_id": _safe_company_id(user), "import_batch_id": batch_id}
+
+
+async def _get_mapping_decisions_response(user: dict, batch_id: str) -> dict:
+    documents = await db.mapping_decisions.find(
+        _get_mapping_decisions_filter(user, batch_id),
+        {"_id": 0},
+    ).sort([
+        ("source_field.sheet_name", 1),
+        ("source_field.source_index", 1),
+    ]).to_list(10000)
+    if not documents:
+        raise HTTPException(status_code=404, detail="Decisões de mapping não encontradas")
+    counts = {"auto": 0, "suggest": 0, "confirm": 0, "unknown": 0}
+    for document in documents:
+        key = str(document.get("decision", "UNKNOWN")).lower()
+        counts[key] = counts.get(key, 0) + 1
+    first = documents[0]
+    return {
+        "import_batch_id": batch_id,
+        "structure_profile_id": first.get("structure_profile_id"),
+        "mapping_engine_version": first.get("mapping_engine_version"),
+        "decision_engine_version": first.get("decision_engine_version"),
+        "decisions": documents,
+        "summary": {"total": len(documents), **counts},
+    }
+
+
+@api_router.post("/imports/{batch_id}/mapping-decisions")
+async def analyze_import_mapping_decisions(batch_id: str, user=Depends(get_current_user)):
+    """Classify candidates; never applies or mutates a mapping."""
+    ensure_db_for_current_loop()
+    company_id = _safe_company_id(user)
+    mapping_document = await db.mapping_candidates.find_one(
+        {"company_id": company_id, "import_batch_id": batch_id},
+        {"_id": 0},
+        sort=[("created_at", -1)],
+    )
+    if not mapping_document:
+        raise HTTPException(status_code=404, detail="Candidatos de mapping não encontrados")
+    expected = len(mapping_document.get("candidates", mapping_document.get("sources", [])))
+    existing_count = await db.mapping_decisions.count_documents({
+        **_get_mapping_decisions_filter(user, batch_id),
+        "decision_engine_version": DECISION_ENGINE_VERSION,
+    })
+    if expected and existing_count == expected:
+        return await _get_mapping_decisions_response(user, batch_id)
+
+    await log_audit(
+        action="DECISION_ANALYSIS_STARTED",
+        entity_type="mapping_decisions",
+        entity_id=batch_id,
+        old_value=None,
+        new_value={"mapping_engine_version": mapping_document.get("mapping_engine_version"), "decision_engine_version": DECISION_ENGINE_VERSION},
+        user_id=user["id"],
+        company_id=company_id,
+    )
+    now = datetime.now(timezone.utc).isoformat()
+    try:
+        structure_profile = await db.import_structure_profiles.find_one(
+            {"company_id": company_id, "import_batch_id": batch_id}, {"_id": 0}, sort=[("created_at", -1)]
+        )
+        knowledge_items = await db.company_knowledge.find(
+            {"company_id": company_id, "status": {"$in": ["ACTIVE", "CONFLICTED"]}}, {"_id": 0}
+        ).to_list(10000)
+        learned_evidence_index = build_learned_evidence_index(structure_profile, mapping_document, knowledge_items)
+        result = decide_mapping_candidates(mapping_document, learned_evidence_index=learned_evidence_index)
+        fusion_applied = [
+            decision for decision in result["decisions"]
+            if decision.get("knowledge_influence") or any(r["code"] == "LEARNING_CONFLICT" for r in decision.get("blocking_reasons", []))
+        ]
+        for decision in result["decisions"]:
+            document = {
+                "id": str(uuid.uuid4()),
+                "company_id": company_id,
+                "import_batch_id": batch_id,
+                "structure_profile_id": mapping_document.get("structure_profile_id"),
+                **decision,
+                "created_at": now,
+                "updated_at": now,
+            }
+            source_field = document["source_field"]
+            await db.mapping_decisions.update_one(
+                {
+                    "company_id": company_id,
+                    "import_batch_id": batch_id,
+                    "source_field": source_field,
+                    "decision_engine_version": DECISION_ENGINE_VERSION,
+                },
+                {"$setOnInsert": document},
+                upsert=True,
+            )
+        response = await _get_mapping_decisions_response(user, batch_id)
+        await log_audit(
+            action="DECISION_ANALYSIS_COMPLETED",
+            entity_type="mapping_decisions",
+            entity_id=batch_id,
+            old_value=None,
+            new_value={"summary": response["summary"]},
+            user_id=user["id"],
+            company_id=company_id,
+        )
+        if fusion_applied:
+            await log_audit(
+                action="DECISION_KNOWLEDGE_FUSION_APPLIED",
+                entity_type="mapping_decisions",
+                entity_id=batch_id,
+                old_value=None,
+                new_value={"affected_sources": len(fusion_applied), "knowledge_adapter_version": KNOWLEDGE_ADAPTER_VERSION},
+                user_id=user["id"],
+                company_id=company_id,
+            )
+        return response
+    except Exception as exc:
+        await log_audit(
+            action="DECISION_ANALYSIS_FAILED",
+            entity_type="mapping_decisions",
+            entity_id=batch_id,
+            old_value=None,
+            new_value={"error": str(exc)},
+            user_id=user["id"],
+            company_id=company_id,
+        )
+        raise HTTPException(status_code=400, detail="Não foi possível gerar decisões de mapping") from exc
+
+
+@api_router.get("/imports/{batch_id}/mapping-decisions")
+async def get_import_mapping_decisions(batch_id: str, user=Depends(get_current_user)):
+    return await _get_mapping_decisions_response(user, batch_id)
+
+
+@api_router.get("/imports/{batch_id}/mapping-decisions/summary")
+async def get_import_mapping_decisions_summary(batch_id: str, user=Depends(get_current_user)):
+    response = await _get_mapping_decisions_response(user, batch_id)
+    return response["summary"]
+
+
+@api_router.get("/imports/{batch_id}/mapping-decisions/{source_field}")
+async def get_import_mapping_decision_for_field(batch_id: str, source_field: str, user=Depends(get_current_user)):
+    response = await _get_mapping_decisions_response(user, batch_id)
+    matches = [
+        decision for decision in response["decisions"]
+        if decision.get("source_field", {}).get("source_name") == source_field
+    ]
+    if not matches:
+        raise HTTPException(status_code=404, detail="Decisão para campo não encontrada")
+    return {"batch_id": batch_id, "source_field": source_field, "decisions": matches}
+
+
+@api_router.post("/imports/{batch_id}/mapping-confirmations")
+async def create_import_mapping_confirmation(batch_id: str, request: Request, user=Depends(get_current_user)):
+    body = await request.json()
+    company_id = _safe_company_id(user)
+    source_field = body.get("source_field_identity") or body.get("source_field") or {}
+    action = str(body.get("action", "")).upper()
+    profile = await db.import_structure_profiles.find_one({"company_id": company_id, "import_batch_id": batch_id}, {"_id": 0}, sort=[("created_at", -1)])
+    if not profile or not validate_source(profile, source_field):
+        raise HTTPException(status_code=400, detail="Campo de origem não existe no StructureProfile")
+    target = body.get("target_field")
+    previous = await db.mapping_decisions.find_one({"company_id": company_id, "import_batch_id": batch_id, "source_field": source_field}, {"_id": 0})
+    try:
+        confirmation = create_confirmation(company_id, batch_id, source_field, target, action, user["id"], previous, body.get("template_id"), body.get("template_version"), body.get("reason", ""))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if confirmation.get("target_field") and action != "REJECT":
+        conflict = await db.mapping_confirmations.find_one({"company_id": company_id, "import_batch_id": batch_id, "target_field": confirmation["target_field"], "decision": "CONFIRMED", "source_field": {"$ne": source_field}}, {"_id": 0})
+        if conflict:
+            raise HTTPException(status_code=409, detail="TARGET_CONFLICT: target já está confirmado para outro campo")
+    await db.mapping_confirmations.insert_one(confirmation)
+    await log_audit(action=f"MAPPING_CONFIRMATION_{confirmation['decision']}", entity_type="mapping_confirmation", entity_id=confirmation["id"], old_value=previous, new_value={"target_field": target, "decision": confirmation["decision"]}, user_id=user["id"], company_id=company_id)
+    try:
+        learning_type = {"CONFIRMED": "MAPPING_CONFIRMED", "REJECTED": "MAPPING_REJECTED", "MODIFIED": "MAPPING_MODIFIED"}[confirmation["decision"]]
+        source_pattern = {"normalized_name": source_field.get("source_name", ""), "type": "UNKNOWN", "sheet_context": source_field.get("sheet_name", ""), "patterns": []}
+        await _create_learning_event_and_project(company_id, learning_type, "mapping_confirmation", confirmation["id"], {"source_pattern": source_pattern, "target_field": target}, {"decision": confirmation["decision"]}, user["id"])
+    except Exception:
+        logging.exception("Learning event could not be recorded for confirmation")
+    return {key: value for key, value in confirmation.items() if key != "_id"}
+
+
+@api_router.get("/imports/{batch_id}/mapping-confirmations")
+async def list_import_mapping_confirmations(batch_id: str, user=Depends(get_current_user)):
+    company_id = _safe_company_id(user)
+    return await db.mapping_confirmations.find({"company_id": company_id, "import_batch_id": batch_id}, {"_id": 0}).sort("confirmed_at", 1).to_list(10000)
+
+
+@api_router.post("/imports/{batch_id}/mapping-template")
+async def create_import_mapping_template(batch_id: str, request: Request, user=Depends(get_current_user)):
+    body = await request.json()
+    company_id = _safe_company_id(user)
+    profile = await db.import_structure_profiles.find_one({"company_id": company_id, "import_batch_id": batch_id}, {"_id": 0}, sort=[("created_at", -1)])
+    if not profile:
+        raise HTTPException(status_code=404, detail="Perfil estrutural não encontrado")
+    confirmations = await db.mapping_confirmations.find({"company_id": company_id, "import_batch_id": batch_id}, {"_id": 0}).to_list(10000)
+    if not confirmations:
+        raise HTTPException(status_code=400, detail="Nenhum mapping confirmado")
+    latest = await db.mapping_templates.find_one({"company_id": company_id, "name": body.get("name", "Template de importação")}, sort=[("template_version", -1)])
+    version = int(latest.get("template_version", 0)) + 1 if latest else 1
+    template = create_mapping_template(company_id, body.get("name", "Template de importação"), profile, confirmations, user["id"], version, latest.get("template_version") if latest else None, body.get("change_reason", ""))
+    await db.mapping_templates.insert_one(template)
+    await log_audit(action="MAPPING_TEMPLATE_VERSION_CREATED" if latest else "MAPPING_TEMPLATE_CREATED", entity_type="mapping_template", entity_id=template["template_id"], old_value=latest, new_value={"template_version": version, "mapping_count": len(template["mappings"])}, user_id=user["id"], company_id=company_id)
+    try:
+        await _create_learning_event_and_project(company_id, "TEMPLATE_CREATED", "mapping_template", template["template_id"], {"source_pattern": {"normalized_name": "template", "type": "STRUCTURE", "sheet_context": "", "patterns": []}, "target_field": "template"}, {"template_version": version}, user["id"])
+    except Exception:
+        logging.exception("Learning event could not be recorded for template")
+    return template
+
+
+@api_router.get("/mapping-templates")
+async def list_mapping_templates(user=Depends(get_current_user)):
+    company_id = _safe_company_id(user)
+    return await db.mapping_templates.find({"company_id": company_id, "status": "ACTIVE"}, {"_id": 0}).sort("updated_at", -1).to_list(1000)
+
+
+@api_router.get("/mapping-templates/{template_id}")
+async def get_mapping_template(template_id: str, user=Depends(get_current_user)):
+    company_id = _safe_company_id(user)
+    template = await db.mapping_templates.find_one({"company_id": company_id, "template_id": template_id}, {"_id": 0}, sort=[("template_version", -1)])
+    if not template:
+        raise HTTPException(status_code=404, detail="Template não encontrado")
+    return template
+
+
+@api_router.put("/mapping-templates/{template_id}")
+async def update_mapping_template(template_id: str, request: Request, user=Depends(get_current_user)):
+    body = await request.json()
+    company_id = _safe_company_id(user)
+    current = await db.mapping_templates.find_one({"company_id": company_id, "template_id": template_id}, {"_id": 0}, sort=[("template_version", -1)])
+    if not current:
+        raise HTTPException(status_code=404, detail="Template não encontrado")
+    update = {"status": body.get("status", current.get("status", "ACTIVE")), "updated_at": utc_now() if "utc_now" in globals() else datetime.now(timezone.utc).isoformat()}
+    await db.mapping_templates.update_one({"company_id": company_id, "template_id": template_id, "template_version": current["template_version"]}, {"$set": update})
+    return {**current, **update}
+
+
+@api_router.post("/mapping-templates/{template_id}/apply")
+async def preview_mapping_template(template_id: str, request: Request, user=Depends(get_current_user)):
+    body = await request.json()
+    batch_id = body.get("import_batch_id")
+    if not batch_id:
+        raise HTTPException(status_code=400, detail="import_batch_id é obrigatório")
+    return await _build_mapping_application_plan(batch_id, user, template_id)
+
+
+async def _build_mapping_application_plan(batch_id: str, user: dict, template_id: str | None = None) -> dict:
+    company_id = _safe_company_id(user)
+    profile = await db.import_structure_profiles.find_one({"company_id": company_id, "import_batch_id": batch_id}, {"_id": 0}, sort=[("created_at", -1)])
+    if not profile:
+        raise HTTPException(status_code=404, detail="Perfil estrutural não encontrado")
+    template = None
+    if template_id:
+        template = await db.mapping_templates.find_one({"company_id": company_id, "template_id": template_id}, {"_id": 0}, sort=[("template_version", -1)])
+        if not template:
+            raise HTTPException(status_code=404, detail="Template não encontrado")
+        confirmations = [{"source_field": item["source_field"], "target_field": item["target_field"], "decision": "CONFIRMED"} for item in template.get("mappings", [])]
+    else:
+        confirmations = await db.mapping_confirmations.find({"company_id": company_id, "import_batch_id": batch_id}, {"_id": 0}).to_list(10000)
+        template = await db.mapping_templates.find_one({"company_id": company_id, "template_id": {"$exists": True}}, {"_id": 0}, sort=[("updated_at", -1)])
+    plan = build_application_plan(profile, confirmations, template)
+    plan.update({"import_batch_id": batch_id, "template_id": template.get("template_id") if template else None, "template_version": template.get("template_version") if template else None})
+    return plan
+
+
+@api_router.post("/imports/{batch_id}/mapping-application/plan")
+async def create_mapping_application_plan(batch_id: str, request: Request, user=Depends(get_current_user)):
+    body = await request.json()
+    return await _build_mapping_application_plan(batch_id, user, body.get("template_id"))
+
+
+@api_router.get("/imports/{batch_id}/mapping-application/plan")
+async def get_mapping_application_plan(batch_id: str, user=Depends(get_current_user)):
+    return await _build_mapping_application_plan(batch_id, user)
+
+
+@api_router.post("/imports/{batch_id}/mapping-application/apply")
+async def apply_mapping_application(batch_id: str, request: Request, user=Depends(get_current_user)):
+    body = await request.json()
+    company_id = _safe_company_id(user)
+    template_id = body.get("template_id")
+    template = await db.mapping_templates.find_one({"company_id": company_id, "template_id": template_id}, {"_id": 0}, sort=[("template_version", -1)]) if template_id else None
+    plan = await _build_mapping_application_plan(batch_id, user, template_id)
+    if plan["status"] == "BLOCKED":
+        raise HTTPException(status_code=409, detail="Application plan is blocked")
+    version = template.get("template_version") if template else 0
+    retry = bool(body.get("retry", False))
+    existing = await db.mapping_applications.find_one({"company_id": company_id, "import_batch_id": batch_id, "template_id": template_id, "template_version": version, "run_number": 1}, {"_id": 0})
+    run_number = 1
+    if existing and existing.get("status") in {"COMPLETED", "RUNNING"}:
+        return existing
+    if existing and existing.get("status") == "PARTIAL" and not retry:
+        existing_records = await db.standard_records.count_documents({"company_id": company_id, "application_id": existing["application_id"]})
+        if existing_records:
+            return existing
+    if retry:
+        last_run = await db.mapping_applications.find_one({"company_id": company_id, "import_batch_id": batch_id, "template_id": template_id, "template_version": version}, sort=[("run_number", -1)])
+        run_number = int(last_run.get("run_number", 1)) + 1 if last_run else 2
+    application_id = "application-" + str(uuid.uuid4())
+    now = datetime.now(timezone.utc).isoformat()
+    application = {"application_id": application_id, "company_id": company_id, "import_batch_id": batch_id, "template_id": template_id, "template_version": version, "run_number": run_number, "retry_of_application_id": existing.get("application_id") if retry and existing else None, "status": "RUNNING", "total_records": 0, "processed_records": 0, "created_records": 0, "blocked_records": sum(item["status"] == "BLOCKED" for item in plan["items"]), "error_records": 0, "started_at": now, "completed_at": None}
+    await db.mapping_applications.insert_one(application)
+    await log_audit(action="MAPPING_APPLICATION_STARTED", entity_type="mapping_application", entity_id=application_id, old_value=None, new_value={"batch_id": batch_id}, user_id=user["id"], company_id=company_id)
+    try:
+        raw_records = await db.raw_records.find({"company_id": company_id, "import_batch_id": batch_id}, {"_id": 0}).sort("source_row", 1).to_list(100000)
+        existing_source_ids = {
+            item.get("source_record_id")
+            async for item in db.standard_records.find(
+                {"company_id": company_id, "import_batch_id": batch_id, "mapping_template_id": template_id, "mapping_template_version": version},
+                {"source_record_id": 1},
+            )
+        }
+        raw_records = [record for record in raw_records if record.get("id") not in existing_source_ids]
+        confirmations = await db.mapping_confirmations.find({"company_id": company_id, "import_batch_id": batch_id}, {"_id": 0}).to_list(10000)
+        if template:
+            confirmations = [{"source_field": item["source_field"], "target_field": item["target_field"], "decision": "CONFIRMED"} for item in template.get("mappings", [])]
+        records, errors = apply_standard_records(raw_records, plan, application_id, company_id, batch_id, template)
+        if records:
+            await db.standard_records.insert_many(records, ordered=False)
+        if errors:
+            await db.application_errors.insert_many(errors, ordered=False)
+        status = "PARTIAL" if errors or application["blocked_records"] else "COMPLETED"
+        update = {"status": status, "total_records": len(raw_records), "processed_records": len(records), "created_records": len(records), "error_records": len(errors), "completed_at": datetime.now(timezone.utc).isoformat()}
+        await db.mapping_applications.update_one({"application_id": application_id, "company_id": company_id}, {"$set": update})
+        await log_audit(action="MAPPING_APPLICATION_PARTIAL" if status == "PARTIAL" else "MAPPING_APPLICATION_COMPLETED", entity_type="mapping_application", entity_id=application_id, old_value=application, new_value=update, user_id=user["id"], company_id=company_id)
+        try:
+            learning_type = "APPLICATION_PARTIAL" if status == "PARTIAL" else "APPLICATION_COMPLETED"
+            await _create_learning_event_and_project(company_id, learning_type, "mapping_application", application_id, {"source_pattern": {"normalized_name": "application", "type": "APPLICATION", "sheet_context": "", "patterns": []}, "target_field": "application"}, {"created_records": len(records), "error_records": len(errors)}, user["id"])
+        except Exception:
+            logging.exception("Learning event could not be recorded for application")
+        return {**application, **update}
+    except Exception as exc:
+        await db.mapping_applications.update_one({"application_id": application_id, "company_id": company_id}, {"$set": {"status": "FAILED", "completed_at": datetime.now(timezone.utc).isoformat()}})
+        await log_audit(action="MAPPING_APPLICATION_FAILED", entity_type="mapping_application", entity_id=application_id, old_value=application, new_value={"error": str(exc)}, user_id=user["id"], company_id=company_id)
+        raise HTTPException(status_code=400, detail="Falha na aplicação do mapping") from exc
+
+
+@api_router.get("/imports/{batch_id}/mapping-application")
+async def get_mapping_application(batch_id: str, user=Depends(get_current_user)):
+    company_id = _safe_company_id(user)
+    return await db.mapping_applications.find({"company_id": company_id, "import_batch_id": batch_id}, {"_id": 0}).sort("started_at", -1).to_list(100)
+
+
+@api_router.get("/mapping-applications/{application_id}")
+async def get_mapping_application_status(application_id: str, user=Depends(get_current_user)):
+    company_id = _safe_company_id(user)
+    application = await db.mapping_applications.find_one({"company_id": company_id, "application_id": application_id}, {"_id": 0})
+    if not application:
+        raise HTTPException(status_code=404, detail="Aplicação não encontrada")
+    return application
+
+
+async def _rebuild_company_knowledge(company_id: str, user_id: str | None = None) -> list[dict]:
+    events = await db.learning_events.find({"company_id": company_id}, {"_id": 0}).sort("created_at", 1).to_list(100000)
+    knowledge = project_knowledge(events)
+    await db.company_knowledge.delete_many({"company_id": company_id})
+    if knowledge:
+        await db.company_knowledge.insert_many(knowledge, ordered=False)
+    await db.learning_observations.delete_many({"company_id": company_id})
+    if knowledge:
+        await db.learning_observations.insert_many(knowledge, ordered=False)
+    await db.learning_versions.update_one(
+        {"company_id": company_id, "learning_version": LEARNING_VERSION},
+        {"$set": {"company_id": company_id, "learning_version": LEARNING_VERSION, "last_rebuilt_at": datetime.now(timezone.utc).isoformat(), "rebuilt_by": user_id}},
+        upsert=True,
+    )
+    return knowledge
+
+
+async def _create_learning_event_and_project(company_id: str, event_type: str, source: str, source_id: str, subject: dict, observation: dict, user_id: str | None = None, event_id: str | None = None):
+    event = create_learning_event(company_id, event_type, source, source_id, subject, observation, user_id, event_id=event_id)
+    existing = await db.learning_events.find_one({"company_id": company_id, "event_id": event["event_id"]}, {"_id": 0})
+    if existing:
+        knowledge = await db.company_knowledge.find({"company_id": company_id}, {"_id": 0}).to_list(100000)
+        return existing, knowledge
+    try:
+        await db.learning_events.insert_one(event)
+    except Exception as exc:
+        if getattr(exc, "code", None) == 11000:
+            return event, await db.company_knowledge.find({"company_id": company_id}, {"_id": 0}).to_list(100000)
+        raise
+    knowledge = await _rebuild_company_knowledge(company_id, user_id)
+    await log_audit("LEARNING_EVENT_CREATED", "learning_event", event["event_id"], None, {"event_type": event_type, "source": source}, user_id, company_id)
+    return event, knowledge
+
+
+@api_router.post("/learning/feedback")
+async def create_learning_feedback(request: Request, user=Depends(get_current_user)):
+    body = await request.json()
+    company_id = _safe_company_id(user)
+    action = str(body.get("action", "")).upper()
+    source_pattern = dict(body.get("source_pattern") or {})
+    target_field = body.get("target_field")
+    if not source_pattern or not target_field:
+        raise HTTPException(status_code=400, detail="source_pattern e target_field são obrigatórios")
+    try:
+        event_type = feedback_event_type(action)
+        signature = pattern_signature(source_pattern, target_field)
+        subject = {"source_pattern": {key: source_pattern.get(key) for key in ("normalized_name", "type", "sheet_context", "patterns") if source_pattern.get(key) is not None}, "target_field": target_field, "pattern_signature": signature}
+        import hashlib
+        idempotency_key = body.get("idempotency_key") or hashlib.sha256(f"{company_id}:{action}:{signature}:{target_field}".encode()).hexdigest()
+        event, knowledge = await _create_learning_event_and_project(company_id, event_type, "learning_feedback", body.get("source_id", signature), subject, {"action": action}, user["id"], event_id="learning-event-" + idempotency_key[:24])
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    feedback = {"feedback_id": "feedback-" + event["event_id"], "company_id": company_id, "event_id": event["event_id"], "action": action, "source_pattern": subject["source_pattern"], "target_field": target_field, "created_by": user["id"], "created_at": event["created_at"], "learning_version": LEARNING_VERSION}
+    try:
+        await db.learning_feedback.insert_one(feedback)
+    except Exception as exc:
+        if getattr(exc, "code", None) != 11000:
+            raise
+    return {"event": event, "feedback": feedback, "knowledge": [item for item in knowledge if item.get("pattern_signature") == signature]}
+
+
+@api_router.get("/learning/feedback")
+async def list_learning_feedback(user=Depends(get_current_user)):
+    return await db.learning_feedback.find({"company_id": _safe_company_id(user)}, {"_id": 0}).sort("created_at", -1).to_list(10000)
+
+
+@api_router.get("/learning/knowledge")
+async def list_company_knowledge(user=Depends(get_current_user)):
+    return await db.company_knowledge.find({"company_id": _safe_company_id(user)}, {"_id": 0}).sort("confidence", -1).to_list(10000)
+
+
+@api_router.get("/learning/knowledge/summary")
+async def get_company_knowledge_summary(user=Depends(get_current_user)):
+    knowledge = await db.company_knowledge.find({"company_id": _safe_company_id(user)}, {"_id": 0}).to_list(10000)
+    return build_learning_summary(knowledge)
+
+
+@api_router.get("/learning/knowledge/{knowledge_id}")
+async def get_company_knowledge_item(knowledge_id: str, user=Depends(get_current_user)):
+    item = await db.company_knowledge.find_one({"company_id": _safe_company_id(user), "observation_id": knowledge_id}, {"_id": 0})
+    if not item:
+        raise HTTPException(status_code=404, detail="Knowledge não encontrado")
+    return item
+
+
+@api_router.post("/learning/knowledge/{knowledge_id}/disable")
+async def disable_company_knowledge(knowledge_id: str, user=Depends(get_current_user)):
+    company_id = _safe_company_id(user)
+    item = await db.company_knowledge.find_one({"company_id": company_id, "observation_id": knowledge_id}, {"_id": 0})
+    if not item:
+        raise HTTPException(status_code=404, detail="Knowledge não encontrado")
+    subject = {"source_pattern": item.get("source_pattern", {}), "target_field": item.get("target_field"), "pattern_signature": item.get("pattern_signature")}
+    await _create_learning_event_and_project(company_id, "KNOWLEDGE_DISABLED", "knowledge", knowledge_id, subject, {}, user["id"])
+    await log_audit("LEARNING_DISABLED", "company_knowledge", knowledge_id, item, None, user["id"], company_id)
+    return {"disabled": True, "observation_id": knowledge_id}
+
+
+@api_router.post("/learning/knowledge/{knowledge_id}/reactivate")
+async def reactivate_company_knowledge(knowledge_id: str, user=Depends(get_current_user)):
+    company_id = _safe_company_id(user)
+    item = await db.company_knowledge.find_one({"company_id": company_id, "observation_id": knowledge_id}, {"_id": 0})
+    if not item:
+        raise HTTPException(status_code=404, detail="Knowledge não encontrado")
+    subject = {"source_pattern": item.get("source_pattern", {}), "target_field": item.get("target_field"), "pattern_signature": item.get("pattern_signature")}
+    await _create_learning_event_and_project(company_id, "KNOWLEDGE_REACTIVATED", "knowledge", knowledge_id, subject, {}, user["id"])
+    return {"reactivated": True, "observation_id": knowledge_id}
+
+
+@api_router.get("/learning/events")
+async def list_learning_events(user=Depends(get_current_user)):
+    return await db.learning_events.find({"company_id": _safe_company_id(user)}, {"_id": 0}).sort("created_at", -1).to_list(10000)
+
+
+@api_router.post("/learning/rebuild")
+async def rebuild_learning_knowledge(user=Depends(get_current_user)):
+    knowledge = await _rebuild_company_knowledge(_safe_company_id(user), user["id"])
+    await log_audit("LEARNING_OBSERVATION_UPDATED", "company_knowledge", None, None, {"count": len(knowledge), "rebuild": True}, user["id"], _safe_company_id(user))
+    return {"rebuilt": True, "summary": build_learning_summary(knowledge)}
+
+
+async def _gather_commercial_context_sources(company_id: str, opportunity: dict) -> tuple:
+    """Fetch only already-existing, tenant-scoped commercial data. Never fabricates."""
+    client = None
+    related_opportunities = None
+    if opportunity.get("client_id"):
+        client = await db.clients.find_one({"id": opportunity["client_id"], "company_id": company_id}, {"_id": 0})
+        related_docs = await db.opportunities.find(
+            {"company_id": company_id, "client_id": opportunity["client_id"], "deleted": {"$ne": True}},
+            {"_id": 0, "status": 1, "estimated_value": 1},
+        ).to_list(1000)
+        related_opportunities = [{"status": doc.get("status"), "value": doc.get("estimated_value")} for doc in related_docs]
+
+    proposal = None
+    if opportunity.get("proposal_id"):
+        proposal = await db.proposals.find_one({"id": opportunity["proposal_id"], "company_id": company_id}, {"_id": 0})
+
+    seller_stats = None
+    seller_id = opportunity.get("seller_id") or opportunity.get("user_id")
+    if seller_id:
+        seller_docs = await db.opportunities.find(
+            {"company_id": company_id, "$or": [{"seller_id": seller_id}, {"user_id": seller_id}], "deleted": {"$ne": True}},
+            {"_id": 0, "status": 1},
+        ).to_list(5000)
+        seller_stats = {
+            "total": len(seller_docs),
+            "won": sum(1 for doc in seller_docs if doc.get("status") == "WON"),
+            "lost": sum(1 for doc in seller_docs if doc.get("status") == "LOST"),
+            "open": sum(1 for doc in seller_docs if doc.get("status") in {"OPEN", "WAITING", "HUMAN_ACTION"}),
+        }
+    return client, proposal, related_opportunities, seller_stats
+
+
+@api_router.post("/commercial-context/{opportunity_id}/refresh")
+async def refresh_commercial_context(opportunity_id: str, user=Depends(get_current_user)):
+    """Rebuild the Commercial Context projection. Never mutates the Opportunity."""
+    company_id = _safe_company_id(user)
+    opportunity = await db.opportunities.find_one(
+        {"id": opportunity_id, "company_id": company_id, "deleted": {"$ne": True}}, {"_id": 0}
+    )
+    if not opportunity:
+        raise HTTPException(status_code=404, detail="Oportunidade não encontrada")
+
+    try:
+        client, proposal, related_opportunities, seller_stats = await _gather_commercial_context_sources(company_id, opportunity)
+        context = build_commercial_context(company_id, opportunity, client, proposal, related_opportunities, seller_stats)
+
+        existing_same_snapshot = await db.commercial_contexts.find_one(
+            {
+                "company_id": company_id,
+                "opportunity_id": opportunity_id,
+                "snapshot_version": COMMERCIAL_CONTEXT_VERSION,
+                "source_snapshot_hash": context["source_snapshot_hash"],
+            },
+            {"_id": 0},
+        )
+        if existing_same_snapshot:
+            return existing_same_snapshot
+
+        had_previous = await db.commercial_contexts.count_documents({"company_id": company_id, "opportunity_id": opportunity_id}) > 0
+        now_iso = datetime.now(timezone.utc).isoformat()
+        document = {**context, "created_at": now_iso, "updated_at": now_iso}
+        await db.commercial_contexts.insert_one(document)
+        await log_audit(
+            action="COMMERCIAL_CONTEXT_REFRESHED" if had_previous else "COMMERCIAL_CONTEXT_CREATED",
+            entity_type="commercial_context",
+            entity_id=context["context_id"],
+            old_value=None,
+            new_value={"opportunity_id": opportunity_id, "data_quality": context["context"]["data_quality"]},
+            user_id=user["id"],
+            company_id=company_id,
+        )
+        return document
+    except Exception as exc:
+        await log_audit(
+            action="COMMERCIAL_CONTEXT_FAILED",
+            entity_type="commercial_context",
+            entity_id=opportunity_id,
+            old_value=None,
+            new_value={"error": str(exc)},
+            user_id=user["id"],
+            company_id=company_id,
+        )
+        raise HTTPException(status_code=400, detail="Não foi possível gerar o contexto comercial") from exc
+
+
+@api_router.get("/commercial-context/summary")
+async def get_commercial_context_summary(user=Depends(get_current_user)):
+    company_id = _safe_company_id(user)
+    pipeline = [
+        {"$match": {"company_id": company_id}},
+        {"$sort": {"created_at": -1}},
+        {"$group": {"_id": "$opportunity_id", "doc": {"$first": "$$ROOT"}}},
+    ]
+    docs = [item["doc"] async for item in db.commercial_contexts.aggregate(pipeline)]
+    total = len(docs)
+    quality_counts = {"COMPLETE": 0, "PARTIAL": 0, "LIMITED": 0, "INSUFFICIENT": 0}
+    high_priority_signals = 0
+    stale_opportunities = 0
+    for doc in docs:
+        quality = doc.get("context", {}).get("data_quality", "INSUFFICIENT")
+        quality_counts[quality] = quality_counts.get(quality, 0) + 1
+        signals = doc.get("context", {}).get("signals", [])
+        high_priority_signals += sum(1 for signal in signals if signal.get("severity") in {"HIGH", "CRITICAL"})
+        if any(signal.get("signal") == "STALE_OPPORTUNITY" for signal in signals):
+            stale_opportunities += 1
+    return {
+        "total_contexts": total,
+        "complete": quality_counts["COMPLETE"],
+        "partial": quality_counts["PARTIAL"],
+        "limited": quality_counts["LIMITED"],
+        "high_priority_signals": high_priority_signals,
+        "stale_opportunities": stale_opportunities,
+    }
+
+
+@api_router.get("/commercial-context/{opportunity_id}")
+async def get_commercial_context(opportunity_id: str, user=Depends(get_current_user)):
+    company_id = _safe_company_id(user)
+    context = await db.commercial_contexts.find_one(
+        {"company_id": company_id, "opportunity_id": opportunity_id}, {"_id": 0}, sort=[("created_at", -1)]
+    )
+    if not context:
+        raise HTTPException(status_code=404, detail="Contexto comercial não encontrado")
+    return context
+
+
+async def _gather_sales_intelligence_inputs(company_id: str, opportunity: dict) -> tuple:
+    """Reuse existing tenant-scoped data only; never touches RawRecords."""
+    knowledge_items = await db.company_knowledge.find(
+        {"company_id": company_id, "status": {"$in": ["ACTIVE", "CONFLICTED"]}}, {"_id": 0}
+    ).to_list(50)
+    related_loss_reasons = []
+    if opportunity.get("client_id"):
+        lost_docs = await db.opportunities.find(
+            {"company_id": company_id, "client_id": opportunity["client_id"], "status": "LOST", "deleted": {"$ne": True}},
+            {"_id": 0, "loss_reason": 1},
+        ).to_list(200)
+        related_loss_reasons = [doc.get("loss_reason") for doc in lost_docs if doc.get("loss_reason")]
+    return knowledge_items, related_loss_reasons
+
+
+@api_router.post("/sales-intelligence/{opportunity_id}/analyze")
+async def analyze_sales_intelligence(opportunity_id: str, user=Depends(get_current_user)):
+    """Advisory-only analysis. Never executes an action or mutates the Opportunity."""
+    company_id = _safe_company_id(user)
+    opportunity = await db.opportunities.find_one(
+        {"id": opportunity_id, "company_id": company_id, "deleted": {"$ne": True}}, {"_id": 0}
+    )
+    if not opportunity:
+        raise HTTPException(status_code=404, detail="Oportunidade não encontrada")
+
+    await log_audit(
+        action="SALES_INTELLIGENCE_STARTED",
+        entity_type="sales_insight",
+        entity_id=opportunity_id,
+        old_value=None,
+        new_value=None,
+        user_id=user["id"],
+        company_id=company_id,
+    )
+    try:
+        commercial_context = await refresh_commercial_context(opportunity_id, user)
+        knowledge_items, related_loss_reasons = await _gather_sales_intelligence_inputs(company_id, opportunity)
+        insight = build_sales_insight(
+            company_id, opportunity, commercial_context,
+            knowledge_items=knowledge_items, related_loss_reasons=related_loss_reasons,
+        )
+
+        existing_same_snapshot = await db.sales_insights.find_one(
+            {
+                "company_id": company_id,
+                "opportunity_id": opportunity_id,
+                "engine_version": SALES_INTELLIGENCE_VERSION,
+                "source_snapshot_hash": insight["source_snapshot_hash"],
+            },
+            {"_id": 0},
+        )
+        if existing_same_snapshot:
+            return existing_same_snapshot
+
+        now_iso = datetime.now(timezone.utc).isoformat()
+        document = {**insight, "created_at": now_iso, "updated_at": now_iso}
+        await db.sales_insights.insert_one(document)
+        await log_audit(
+            action="SALES_INTELLIGENCE_COMPLETED",
+            entity_type="sales_insight",
+            entity_id=insight["insight_id"],
+            old_value=None,
+            new_value={"priority": insight["priority"], "urgency": insight["urgency"]},
+            user_id=user["id"],
+            company_id=company_id,
+        )
+        return document
+    except Exception as exc:
+        await log_audit(
+            action="SALES_INTELLIGENCE_FAILED",
+            entity_type="sales_insight",
+            entity_id=opportunity_id,
+            old_value=None,
+            new_value={"error": str(exc)},
+            user_id=user["id"],
+            company_id=company_id,
+        )
+        raise HTTPException(status_code=400, detail="Não foi possível gerar a análise comercial") from exc
+
+
+@api_router.get("/sales-intelligence/summary")
+async def get_sales_intelligence_summary(user=Depends(get_current_user)):
+    company_id = _safe_company_id(user)
+    pipeline = [
+        {"$match": {"company_id": company_id}},
+        {"$sort": {"created_at": -1}},
+        {"$group": {"_id": "$opportunity_id", "doc": {"$first": "$$ROOT"}}},
+    ]
+    docs = [item["doc"] async for item in db.sales_insights.aggregate(pipeline)]
+    priority_counts: dict[str, int] = {}
+    urgency_counts: dict[str, int] = {}
+    for doc in docs:
+        priority_counts[doc.get("priority", "P4_NONE")] = priority_counts.get(doc.get("priority", "P4_NONE"), 0) + 1
+        urgency_counts[doc.get("urgency", "NONE")] = urgency_counts.get(doc.get("urgency", "NONE"), 0) + 1
+    return {
+        "total_insights": len(docs),
+        "by_priority": priority_counts,
+        "by_urgency": urgency_counts,
+        "overdue_followups": sum(1 for doc in docs if doc.get("insight", {}).get("followup_state", {}).get("state") in {"OVERDUE", "URGENT"}),
+    }
+
+
+@api_router.get("/sales-intelligence/{opportunity_id}")
+async def get_sales_intelligence(opportunity_id: str, user=Depends(get_current_user)):
+    company_id = _safe_company_id(user)
+    insight = await db.sales_insights.find_one(
+        {"company_id": company_id, "opportunity_id": opportunity_id}, {"_id": 0}, sort=[("created_at", -1)]
+    )
+    if not insight:
+        raise HTTPException(status_code=404, detail="Análise comercial não encontrada")
+    return insight
+
+
+async def _load_action_plan_inputs(opportunity_id: str, user: dict) -> tuple[dict, dict, dict]:
+    company_id = _safe_company_id(user)
+    opportunity = await db.opportunities.find_one(
+        {"id": opportunity_id, "company_id": company_id, "deleted": {"$ne": True}}, {"_id": 0}
+    )
+    if not opportunity:
+        raise HTTPException(status_code=404, detail="Oportunidade não encontrada")
+    insight = await db.sales_insights.find_one(
+        {"company_id": company_id, "opportunity_id": opportunity_id}, {"_id": 0}, sort=[("created_at", -1)]
+    )
+    if not insight:
+        raise HTTPException(status_code=409, detail="STALE_INSIGHT: gere uma nova análise comercial antes do plano")
+    context = await db.commercial_contexts.find_one(
+        {"company_id": company_id, "opportunity_id": opportunity_id}, {"_id": 0}, sort=[("created_at", -1)]
+    )
+    if not context:
+        raise HTTPException(status_code=409, detail="Contexto comercial não encontrado")
+    return opportunity, insight, context
+
+
+@api_router.post("/action-plans/{opportunity_id}/generate")
+async def generate_action_plan(opportunity_id: str, user=Depends(get_current_user)):
+    company_id = _safe_company_id(user)
+    await log_audit(
+        action="ACTION_PLAN_GENERATION_STARTED",
+        entity_type="action_plan",
+        entity_id=opportunity_id,
+        old_value=None,
+        new_value=None,
+        user_id=user["id"],
+        company_id=company_id,
+    )
+    try:
+        opportunity, insight, context = await _load_action_plan_inputs(opportunity_id, user)
+        plan = build_action_plan(company_id, opportunity, insight, context)
+        existing = await db.action_plans.find_one(
+            {
+                "company_id": company_id,
+                "opportunity_id": opportunity_id,
+                "engine_version": ACTION_PLANNING_VERSION,
+                "source_snapshot_hash": plan["source_snapshot_hash"],
+            },
+            {"_id": 0},
+        )
+        if existing:
+            return existing
+
+        await db.action_plans.update_many(
+            {
+                "company_id": company_id,
+                "opportunity_id": opportunity_id,
+                "status": {"$in": ["DRAFT", "PENDING_REVIEW", "APPROVED"]},
+                "source_snapshot_hash": {"$ne": plan["source_snapshot_hash"]},
+            },
+            {"$set": {"status": "SUPERSEDED", "updated_at": datetime.now(timezone.utc).isoformat()}},
+        )
+        await db.action_plans.insert_one(plan)
+        await log_audit(
+            action="ACTION_PLAN_GENERATED",
+            entity_type="action_plan",
+            entity_id=plan["action_plan_id"],
+            old_value=None,
+            new_value={"opportunity_id": opportunity_id, "status": plan["status"], "actions": len(plan["actions"])},
+            user_id=user["id"],
+            company_id=company_id,
+        )
+        return plan
+    except HTTPException as exc:
+        await log_audit(
+            action="ACTION_PLAN_GENERATION_FAILED",
+            entity_type="action_plan",
+            entity_id=opportunity_id,
+            old_value=None,
+            new_value={"error": str(exc.detail)},
+            user_id=user["id"],
+            company_id=company_id,
+        )
+        raise
+    except ValueError as exc:
+        await log_audit(
+            action="ACTION_PLAN_GENERATION_FAILED",
+            entity_type="action_plan",
+            entity_id=opportunity_id,
+            old_value=None,
+            new_value={"error": str(exc)},
+            user_id=user["id"],
+            company_id=company_id,
+        )
+        status_code = 409 if "STALE" in str(exc) or "MISMATCH" in str(exc) else 400
+        raise HTTPException(status_code=status_code, detail=str(exc)) from exc
+    except Exception as exc:
+        await log_audit(
+            action="ACTION_PLAN_GENERATION_FAILED",
+            entity_type="action_plan",
+            entity_id=opportunity_id,
+            old_value=None,
+            new_value={"error": str(exc)},
+            user_id=user["id"],
+            company_id=company_id,
+        )
+        raise HTTPException(status_code=400, detail="Não foi possível gerar o plano de ação") from exc
+
+
+@api_router.get("/action-plans/summary")
+async def get_action_plan_summary(user=Depends(get_current_user)):
+    company_id = _safe_company_id(user)
+    pipeline = [
+        {"$match": {"company_id": company_id}},
+        {"$sort": {"updated_at": -1}},
+        {"$group": {"_id": "$opportunity_id", "doc": {"$first": "$$ROOT"}}},
+    ]
+    docs = [item["doc"] async for item in db.action_plans.aggregate(pipeline)]
+    counts = {status.lower(): 0 for status in ["DRAFT", "PENDING_REVIEW", "APPROVED", "REJECTED", "EXPIRED"]}
+    for doc in docs:
+        status = doc.get("status", "DRAFT").lower()
+        if status in counts:
+            counts[status] += 1
+    return {
+        "total": len(docs),
+        **counts,
+        "high_priority": sum(1 for doc in docs if doc.get("plan", {}).get("priority") in {"P0_CRITICAL", "P1_HIGH"}),
+    }
+
+
+@api_router.get("/action-plans/{opportunity_id}")
+async def get_action_plan(opportunity_id: str, user=Depends(get_current_user)):
+    company_id = _safe_company_id(user)
+    plan = await db.action_plans.find_one(
+        {"company_id": company_id, "opportunity_id": opportunity_id, "status": {"$ne": "SUPERSEDED"}},
+        {"_id": 0},
+        sort=[("updated_at", -1)],
+    )
+    if not plan:
+        raise HTTPException(status_code=404, detail="Action Plan não encontrado")
+    return plan
+
+
+@api_router.post("/action-plans/{plan_id}/approve")
+async def approve_action_plan(plan_id: str, user=Depends(get_current_user)):
+    company_id = _safe_company_id(user)
+    plan = await db.action_plans.find_one({"company_id": company_id, "action_plan_id": plan_id}, {"_id": 0})
+    if not plan:
+        raise HTTPException(status_code=404, detail="Action Plan não encontrado")
+    if plan.get("status") not in {"DRAFT", "PENDING_REVIEW"}:
+        raise HTTPException(status_code=409, detail="Action Plan não pode ser aprovado neste estado")
+    now_iso = datetime.now(timezone.utc).isoformat()
+    await db.action_plans.update_one(
+        {"company_id": company_id, "action_plan_id": plan_id},
+        {"$set": {"status": "APPROVED", "updated_at": now_iso}},
+    )
+    await log_audit("ACTION_PLAN_APPROVED", "action_plan", plan_id, {"status": plan["status"]}, {"status": "APPROVED"}, user["id"], company_id)
+    plan["status"] = "APPROVED"
+    plan["updated_at"] = now_iso
+    return plan
+
+
+@api_router.post("/action-plans/{plan_id}/reject")
+async def reject_action_plan(plan_id: str, request: Request, user=Depends(get_current_user)):
+    company_id = _safe_company_id(user)
+    plan = await db.action_plans.find_one({"company_id": company_id, "action_plan_id": plan_id}, {"_id": 0})
+    if not plan:
+        raise HTTPException(status_code=404, detail="Action Plan não encontrado")
+    if plan.get("status") not in {"DRAFT", "PENDING_REVIEW"}:
+        raise HTTPException(status_code=409, detail="Action Plan não pode ser rejeitado neste estado")
+    body = await request.json()
+    reason = str(body.get("reason") or "Rejeitado pelo usuário.").strip()
+    now_iso = datetime.now(timezone.utc).isoformat()
+    await db.action_plans.update_one(
+        {"company_id": company_id, "action_plan_id": plan_id},
+        {"$set": {"status": "REJECTED", "rejection": {"reason": reason, "user_id": user["id"], "timestamp": now_iso}, "updated_at": now_iso}},
+    )
+    await log_audit("ACTION_PLAN_REJECTED", "action_plan", plan_id, {"status": plan["status"]}, {"status": "REJECTED", "reason": reason}, user["id"], company_id)
+    plan["status"] = "REJECTED"
+    plan["rejection"] = {"reason": reason, "user_id": user["id"], "timestamp": now_iso}
+    plan["updated_at"] = now_iso
+    return plan
+
+
+async def _load_execution_inputs(action_plan_id: str, action_id: str, user: dict) -> tuple[dict, dict, dict, dict, dict]:
+    company_id = _safe_company_id(user)
+    plan = await db.action_plans.find_one(
+        {"company_id": company_id, "action_plan_id": action_plan_id}, {"_id": 0}
+    )
+    if not plan:
+        raise HTTPException(status_code=404, detail="Action Plan não encontrado")
+    action = next((item for item in plan.get("actions", []) if item.get("action_id") == action_id), None)
+    if not action:
+        raise HTTPException(status_code=404, detail="Action não pertence ao plano")
+    opportunity = await db.opportunities.find_one(
+        {"company_id": company_id, "id": plan.get("opportunity_id"), "deleted": {"$ne": True}}, {"_id": 0}
+    )
+    insight = await db.sales_insights.find_one(
+        {"company_id": company_id, "opportunity_id": plan.get("opportunity_id")}, {"_id": 0}, sort=[("created_at", -1)]
+    )
+    context = await db.commercial_contexts.find_one(
+        {"company_id": company_id, "opportunity_id": plan.get("opportunity_id")}, {"_id": 0}, sort=[("created_at", -1)]
+    )
+    if not opportunity or not insight or not context:
+        raise HTTPException(status_code=409, detail="Execution blocked: cadeia comercial incompleta")
+    return plan, action, opportunity, insight, context
+
+
+@api_router.post("/execution-jobs/{action_plan_id}/create")
+async def create_execution_job(action_plan_id: str, request: Request, user=Depends(get_current_user)):
+    company_id = _safe_company_id(user)
+    body = await request.json()
+    action_id = str(body.get("action_id") or "").strip()
+    mode = str(body.get("mode") or "SIMULATION").upper()
+    try:
+        plan, action, opportunity, insight, context = await _load_execution_inputs(action_plan_id, action_id, user)
+        job = build_execution_job(
+            company_id,
+            plan,
+            action,
+            opportunity,
+            insight,
+            context,
+            mode=mode,
+            requested_policy=body.get("policy"),
+            expires_at=body.get("expires_at"),
+        )
+        existing = await db.execution_jobs.find_one(
+            {
+                "company_id": company_id,
+                "action_plan_id": action_plan_id,
+                "action_id": action_id,
+                "mode": mode,
+                "executor_version": ACTION_EXECUTOR_VERSION,
+                "source_snapshot_hash": job["source_snapshot_hash"],
+            },
+            {"_id": 0},
+        )
+        if existing:
+            return existing
+        await db.execution_jobs.insert_one(job)
+        await log_audit(
+            "EXECUTION_JOB_CREATED", "execution_job", job["execution_job_id"], None,
+            {"action_plan_id": action_plan_id, "action_id": action_id, "mode": mode}, user["id"], company_id,
+        )
+        return job
+    except (HTTPException, ValueError) as exc:
+        detail = exc.detail if isinstance(exc, HTTPException) else str(exc)
+        await log_audit(
+            "EXECUTION_JOB_BLOCKED", "execution_job", action_plan_id, None,
+            {"action_id": action_id, "mode": mode, "reason": str(detail)}, user["id"], company_id,
+        )
+        if isinstance(exc, HTTPException):
+            raise
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        await log_audit(
+            "EXECUTION_JOB_FAILED", "execution_job", action_plan_id, None,
+            {"action_id": action_id, "error": str(exc)}, user["id"], company_id,
+        )
+        raise HTTPException(status_code=400, detail="Não foi possível criar o Execution Job") from exc
+
+
+@api_router.post("/execution-jobs/{job_id}/simulate")
+async def simulate_execution(job_id: str, user=Depends(get_current_user)):
+    company_id = _safe_company_id(user)
+    job = await db.execution_jobs.find_one({"company_id": company_id, "execution_job_id": job_id}, {"_id": 0})
+    if not job:
+        raise HTTPException(status_code=404, detail="Execution Job não encontrado")
+    await log_audit(
+        "EXECUTION_JOB_SIMULATION_STARTED", "execution_job", job_id, {"status": job.get("status")}, None,
+        user["id"], company_id,
+    )
+    try:
+        simulated = simulate_execution_job(job)
+        await db.execution_jobs.replace_one(
+            {"company_id": company_id, "execution_job_id": job_id}, simulated
+        )
+        if simulated["status"] == "EXPIRED":
+            await log_audit(
+                "EXECUTION_JOB_FAILED", "execution_job", job_id, {"status": job.get("status")},
+                {"status": "EXPIRED", "external_side_effect": False}, user["id"], company_id,
+            )
+            return simulated
+        await log_audit(
+            "EXECUTION_JOB_SIMULATED", "execution_job", job_id, {"status": job.get("status")},
+            {"status": simulated["status"], "external_side_effect": False}, user["id"], company_id,
+        )
+        return simulated
+    except ValueError as exc:
+        await log_audit(
+            "EXECUTION_JOB_FAILED", "execution_job", job_id, {"status": job.get("status")},
+            {"error": str(exc)}, user["id"], company_id,
+        )
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@api_router.get("/execution-jobs")
+async def list_execution_jobs(
+    status: str | None = None,
+    channel: str | None = None,
+    action_type: str | None = None,
+    opportunity_id: str | None = None,
+    date: str | None = None,
+    user=Depends(get_current_user),
+):
+    query: dict = {"company_id": _safe_company_id(user)}
+    for key, value in {
+        "status": status,
+        "channel": channel,
+        "action_type": action_type,
+        "opportunity_id": opportunity_id,
+    }.items():
+        if value:
+            query[key] = value
+    if date:
+        query["created_at"] = {"$gte": date}
+    return await db.execution_jobs.find(query, {"_id": 0}).sort("created_at", -1).to_list(10000)
+
+
+@api_router.get("/execution-jobs/{job_id}")
+async def get_execution_job(job_id: str, user=Depends(get_current_user)):
+    job = await db.execution_jobs.find_one(
+        {"company_id": _safe_company_id(user), "execution_job_id": job_id}, {"_id": 0}
+    )
+    if not job:
+        raise HTTPException(status_code=404, detail="Execution Job não encontrado")
+    return job
+
+
+@api_router.post("/execution-jobs/{job_id}/cancel")
+async def cancel_execution(job_id: str, user=Depends(get_current_user)):
+    company_id = _safe_company_id(user)
+    job = await db.execution_jobs.find_one({"company_id": company_id, "execution_job_id": job_id}, {"_id": 0})
+    if not job:
+        raise HTTPException(status_code=404, detail="Execution Job não encontrado")
+    try:
+        cancelled = cancel_execution_job(job)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    await db.execution_jobs.replace_one({"company_id": company_id, "execution_job_id": job_id}, cancelled)
+    await log_audit(
+        "EXECUTION_JOB_CANCELLED", "execution_job", job_id, {"status": job.get("status")},
+        {"status": "CANCELLED"}, user["id"], company_id,
+    )
+    return cancelled
+
+
+async def _load_communication_inputs(execution_job_id: str, user: dict) -> tuple[dict, dict, dict, dict | None]:
+    company_id = _safe_company_id(user)
+    job = await db.execution_jobs.find_one(
+        {"company_id": company_id, "execution_job_id": execution_job_id}, {"_id": 0}
+    )
+    if not job:
+        raise HTTPException(status_code=404, detail="Execution Job não encontrado")
+    plan = await db.action_plans.find_one(
+        {"company_id": company_id, "action_plan_id": job.get("action_plan_id")}, {"_id": 0}
+    )
+    opportunity = await db.opportunities.find_one(
+        {"company_id": company_id, "id": job.get("opportunity_id"), "deleted": {"$ne": True}}, {"_id": 0}
+    )
+    if not plan or not opportunity:
+        raise HTTPException(status_code=409, detail="Communication blocked: cadeia de execução inconsistente")
+    client = None
+    if opportunity.get("client_id"):
+        client = await db.clients.find_one(
+            {"company_id": company_id, "id": opportunity["client_id"], "deleted": {"$ne": True}}, {"_id": 0}
+        )
+        if not client:
+            raise HTTPException(status_code=409, detail="MISSING_RECIPIENT_CLIENT")
+    return job, plan, opportunity, client
+
+
+@api_router.post("/communication-requests/{execution_job_id}/prepare")
+async def prepare_communication_request(execution_job_id: str, user=Depends(get_current_user)):
+    company_id = _safe_company_id(user)
+    await log_audit(
+        "COMMUNICATION_REQUEST_RECEIVED", "communication_request", execution_job_id, None,
+        {"execution_job_id": execution_job_id}, user["id"], company_id,
+    )
+    try:
+        job, plan, opportunity, client = await _load_communication_inputs(execution_job_id, user)
+        communication = build_communication_request(company_id, job, plan, opportunity, client)
+        existing = await db.communication_requests.find_one(
+            {
+                "company_id": company_id,
+                "execution_job_id": execution_job_id,
+                "communication_request_hash": communication["communication_request_hash"],
+                "gateway_version": COMMUNICATION_GATEWAY_VERSION,
+            },
+            {"_id": 0},
+        )
+        if existing:
+            return existing
+        await db.communication_requests.insert_one(communication)
+        if communication["status"] == "PREPARED":
+            await log_audit(
+                "COMMUNICATION_REQUEST_VALIDATED", "communication_request", communication["request_id"], None,
+                {"channel": communication["channel"]}, user["id"], company_id,
+            )
+            await log_audit(
+                "COMMUNICATION_REQUEST_PREPARED", "communication_request", communication["request_id"], None,
+                {"adapter": communication["adapter"], "external_side_effect": False}, user["id"], company_id,
+            )
+        elif communication["status"] == "BLOCKED":
+            await log_audit(
+                "COMMUNICATION_REQUEST_BLOCKED", "communication_request", communication["request_id"], None,
+                {"reason": communication["reason"]}, user["id"], company_id,
+            )
+        else:
+            await log_audit(
+                "COMMUNICATION_REQUEST_REJECTED", "communication_request", communication["request_id"], None,
+                {"reason": communication["reason"]}, user["id"], company_id,
+            )
+        return communication
+    except (HTTPException, ValueError) as exc:
+        detail = exc.detail if isinstance(exc, HTTPException) else str(exc)
+        event = "COMMUNICATION_REQUEST_BLOCKED" if "MISSING" in str(detail) else "COMMUNICATION_REQUEST_FAILED"
+        await log_audit(event, "communication_request", execution_job_id, None, {"reason": str(detail)}, user["id"], company_id)
+        if isinstance(exc, HTTPException):
+            raise
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@api_router.post("/communication-requests/{request_id}/simulate")
+async def simulate_communication(request_id: str, user=Depends(get_current_user)):
+    company_id = _safe_company_id(user)
+    communication = await db.communication_requests.find_one(
+        {"company_id": company_id, "request_id": request_id}, {"_id": 0}
+    )
+    if not communication:
+        raise HTTPException(status_code=404, detail="Communication Request não encontrada")
+    try:
+        simulated = simulate_communication_request(communication)
+        await db.communication_requests.replace_one(
+            {"company_id": company_id, "request_id": request_id}, simulated
+        )
+        event = "COMMUNICATION_REQUEST_SIMULATED" if simulated["status"] == "SIMULATED" else "COMMUNICATION_REQUEST_PREPARED"
+        await log_audit(
+            event, "communication_request", request_id, {"status": communication["status"]},
+            {"status": simulated["status"], "external_side_effect": False}, user["id"], company_id,
+        )
+        return simulated
+    except ValueError as exc:
+        await log_audit(
+            "COMMUNICATION_REQUEST_FAILED", "communication_request", request_id, {"status": communication.get("status")},
+            {"error": str(exc)}, user["id"], company_id,
+        )
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@api_router.get("/communication-requests")
+async def list_communication_requests(
+    channel: str | None = None,
+    action_type: str | None = None,
+    status: str | None = None,
+    opportunity_id: str | None = None,
+    execution_job_id: str | None = None,
+    created_at: str | None = None,
+    user=Depends(get_current_user),
+):
+    query: dict = {"company_id": _safe_company_id(user)}
+    for key, value in {
+        "channel": channel,
+        "action_type": action_type,
+        "status": status,
+        "opportunity_id": opportunity_id,
+        "execution_job_id": execution_job_id,
+    }.items():
+        if value:
+            query[key] = value
+    if created_at:
+        query["created_at"] = {"$gte": created_at}
+    return await db.communication_requests.find(query, {"_id": 0}).sort("created_at", -1).to_list(10000)
+
+
+@api_router.get("/communication-requests/{request_id}")
+async def get_communication_request(request_id: str, user=Depends(get_current_user)):
+    communication = await db.communication_requests.find_one(
+        {"company_id": _safe_company_id(user), "request_id": request_id}, {"_id": 0}
+    )
+    if not communication:
+        raise HTTPException(status_code=404, detail="Communication Request não encontrada")
+    return communication
+
+
+@api_router.post("/communication-requests/{request_id}/cancel")
+async def cancel_communication(request_id: str, user=Depends(get_current_user)):
+    company_id = _safe_company_id(user)
+    communication = await db.communication_requests.find_one(
+        {"company_id": company_id, "request_id": request_id}, {"_id": 0}
+    )
+    if not communication:
+        raise HTTPException(status_code=404, detail="Communication Request não encontrada")
+    try:
+        cancelled = cancel_communication_request(communication)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    await db.communication_requests.replace_one(
+        {"company_id": company_id, "request_id": request_id}, cancelled
+    )
+    await log_audit(
+        "COMMUNICATION_REQUEST_REJECTED", "communication_request", request_id,
+        {"status": communication["status"]}, {"status": "REJECTED", "reason": "CANCELLED_BY_USER"},
+        user["id"], company_id,
+    )
+    return cancelled
+
+
+async def _load_message_intelligence_inputs(communication_request_id: str, user: dict) -> tuple:
+    company_id = _safe_company_id(user)
+    try:
+        return await load_message_draft_inputs(db, company_id, communication_request_id)
+    except MessageDraftInputsNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except MessageDraftInputsIncomplete as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+async def _generate_message_draft(communication_request_id: str, user: dict) -> dict:
+    company_id = _safe_company_id(user)
+    await log_audit(
+        "MESSAGE_DRAFT_GENERATION_STARTED", "message_draft", communication_request_id, None,
+        {"communication_request_id": communication_request_id}, user["id"], company_id,
+    )
+    try:
+        inputs = await _load_message_intelligence_inputs(communication_request_id, user)
+        draft = build_message_draft(company_id, *inputs)
+        existing = await db.message_drafts.find_one(
+            {
+                "company_id": company_id,
+                "communication_request_id": communication_request_id,
+                "message_intelligence_version": MESSAGE_INTELLIGENCE_VERSION,
+                "source_snapshot_hash": draft["source_snapshot_hash"],
+            },
+            {"_id": 0},
+        )
+        if existing:
+            return existing
+        now_iso = datetime.now(timezone.utc).isoformat()
+        document = {**draft, "created_at": now_iso, "updated_at": now_iso}
+        if draft["status"] == "READY_FOR_REVIEW":
+            previous = await db.message_drafts.find(
+                {
+                    "company_id": company_id,
+                    "communication_request_id": communication_request_id,
+                    "status": {"$in": ["CREATED", "READY_FOR_REVIEW", "APPROVED"]},
+                },
+                {"_id": 0},
+            ).to_list(100)
+            if previous:
+                await db.message_drafts.update_many(
+                    {"company_id": company_id, "message_draft_id": {"$in": [item["message_draft_id"] for item in previous]}},
+                    {"$set": {"status": "SUPERSEDED", "updated_at": now_iso}},
+                )
+                for item in previous:
+                    await log_audit(
+                        "MESSAGE_DRAFT_SUPERSEDED", "message_draft", item["message_draft_id"],
+                        {"status": item["status"]}, {"status": "SUPERSEDED", "superseded_by": draft["message_draft_id"]},
+                        user["id"], company_id,
+                    )
+        await db.message_drafts.insert_one(document)
+        event = "MESSAGE_DRAFT_BLOCKED" if draft["status"] == "BLOCKED" else "MESSAGE_DRAFT_GENERATED"
+        await log_audit(
+            event, "message_draft", draft["message_draft_id"], None,
+            {"status": draft["status"], "template_id": draft["template_id"], "confidence": draft["confidence"]},
+            user["id"], company_id,
+        )
+        return document
+    except HTTPException as exc:
+        await log_audit(
+            "MESSAGE_DRAFT_BLOCKED", "message_draft", communication_request_id, None,
+            {"error": str(exc.detail)}, user["id"], company_id,
+        )
+        raise
+    except ValueError as exc:
+        await log_audit(
+            "MESSAGE_DRAFT_BLOCKED", "message_draft", communication_request_id, None,
+            {"error": str(exc)}, user["id"], company_id,
+        )
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        await log_audit(
+            "MESSAGE_DRAFT_BLOCKED", "message_draft", communication_request_id, None,
+            {"error": str(exc)}, user["id"], company_id,
+        )
+        raise HTTPException(status_code=400, detail="Não foi possível gerar o Message Draft") from exc
+
+
+@api_router.post("/message-drafts/{communication_request_id}/generate")
+async def generate_message_draft(communication_request_id: str, user=Depends(get_current_user)):
+    return await _generate_message_draft(communication_request_id, user)
+
+
+@api_router.get("/message-drafts")
+async def list_message_drafts(
+    company: str | None = None,
+    opportunity: str | None = None,
+    channel: str | None = None,
+    action_type: str | None = None,
+    status: str | None = None,
+    created_at: str | None = None,
+    user=Depends(get_current_user),
+):
+    company_id = _safe_company_id(user)
+    if company and company != company_id:
+        raise HTTPException(status_code=403, detail="Empresa não autorizada")
+    query: dict = {"company_id": company_id}
+    for key, value in {"opportunity_id": opportunity, "channel": channel, "action_type": action_type, "status": status}.items():
+        if value:
+            query[key] = value
+    if created_at:
+        query["created_at"] = {"$gte": created_at}
+    return await db.message_drafts.find(query, {"_id": 0}).sort("created_at", -1).to_list(10000)
+
+
+@api_router.get("/message-drafts/{draft_id}")
+async def get_message_draft(draft_id: str, user=Depends(get_current_user)):
+    draft = await db.message_drafts.find_one(
+        {"company_id": _safe_company_id(user), "message_draft_id": draft_id}, {"_id": 0}
+    )
+    if not draft:
+        raise HTTPException(status_code=404, detail="Message Draft não encontrado")
+    return draft
+
+
+@api_router.post("/message-drafts/{draft_id}/regenerate")
+async def regenerate_message_draft(draft_id: str, user=Depends(get_current_user)):
+    draft = await get_message_draft(draft_id, user)
+    return await _generate_message_draft(draft["communication_request_id"], user)
+
+
+@api_router.post("/message-drafts/{draft_id}/approve")
+async def approve_message_draft(draft_id: str, user=Depends(get_current_user)):
+    company_id = _safe_company_id(user)
+    draft = await db.message_drafts.find_one({"company_id": company_id, "message_draft_id": draft_id}, {"_id": 0})
+    if not draft:
+        raise HTTPException(status_code=404, detail="Message Draft não encontrado")
+    if draft.get("status") != "READY_FOR_REVIEW":
+        raise HTTPException(status_code=409, detail="Message Draft não pode ser aprovado neste estado")
+    now_iso = datetime.now(timezone.utc).isoformat()
+    await db.message_drafts.update_one(
+        {"company_id": company_id, "message_draft_id": draft_id},
+        {"$set": {"status": "APPROVED", "human_approved": True, "updated_at": now_iso}},
+    )
+    await log_audit("MESSAGE_DRAFT_APPROVED", "message_draft", draft_id, {"status": draft["status"]}, {"status": "APPROVED"}, user["id"], company_id)
+    return {**draft, "status": "APPROVED", "human_approved": True, "updated_at": now_iso}
+
+
+@api_router.post("/message-drafts/{draft_id}/reject")
+async def reject_message_draft(draft_id: str, request: Request, user=Depends(get_current_user)):
+    company_id = _safe_company_id(user)
+    draft = await db.message_drafts.find_one({"company_id": company_id, "message_draft_id": draft_id}, {"_id": 0})
+    if not draft:
+        raise HTTPException(status_code=404, detail="Message Draft não encontrado")
+    if draft.get("status") != "READY_FOR_REVIEW":
+        raise HTTPException(status_code=409, detail="Message Draft não pode ser rejeitado neste estado")
+    body = await request.json()
+    reason = str(body.get("reason") or "Rejeitado pelo usuário.").strip()
+    now_iso = datetime.now(timezone.utc).isoformat()
+    rejection = {"reason": reason, "user_id": user["id"], "timestamp": now_iso}
+    await db.message_drafts.update_one(
+        {"company_id": company_id, "message_draft_id": draft_id},
+        {"$set": {"status": "REJECTED", "human_rejected": True, "rejection": rejection, "updated_at": now_iso}},
+    )
+    await log_audit("MESSAGE_DRAFT_REJECTED", "message_draft", draft_id, {"status": draft["status"]}, {"status": "REJECTED", "reason": reason}, user["id"], company_id)
+    return {**draft, "status": "REJECTED", "human_rejected": True, "rejection": rejection, "updated_at": now_iso}
+
+
+@api_router.post("/message-drafts/{draft_id}/edit")
+async def edit_message_draft(draft_id: str, request: Request, user=Depends(get_current_user)):
+    company_id = _safe_company_id(user)
+    draft = await db.message_drafts.find_one({"company_id": company_id, "message_draft_id": draft_id}, {"_id": 0})
+    if not draft:
+        raise HTTPException(status_code=404, detail="Message Draft não encontrado")
+    if draft.get("status") != "READY_FOR_REVIEW":
+        raise HTTPException(status_code=409, detail="Message Draft não pode ser editado neste estado")
+    body = await request.json()
+    edited_content = body.get("content")
+    if not isinstance(edited_content, dict):
+        raise HTTPException(status_code=400, detail="Conteúdo editado inválido")
+    allowed_fields = {"subject", "opening", "body", "call_to_action", "closing"}
+    if set(edited_content) != allowed_fields or any(value is not None and not isinstance(value, str) for value in edited_content.values()):
+        raise HTTPException(status_code=400, detail="Campos de conteúdo inválidos")
+    length = sum(len(value) for value in edited_content.values() if value)
+    if length > draft.get("policy", {}).get("max_message_length", 1000):
+        raise HTTPException(status_code=400, detail="Mensagem excede o limite do canal")
+    now_iso = datetime.now(timezone.utc).isoformat()
+    reason = str(body.get("reason") or "Edição humana.").strip()
+    history_item = {
+        "original_content": draft["original_content"], "edited_content": edited_content,
+        "edited_by": user["id"], "edited_at": now_iso, "edit_reason": reason,
+    }
+    changed_fields = sorted(field for field in allowed_fields if draft["original_content"].get(field) != edited_content.get(field))
+    await db.message_drafts.update_one(
+        {"company_id": company_id, "message_draft_id": draft_id},
+        {"$set": {"edited_content": edited_content, "human_edited": True, "edit_delta": changed_fields, "updated_at": now_iso}, "$push": {"edit_history": history_item}},
+    )
+    await log_audit(
+        "MESSAGE_DRAFT_EDITED", "message_draft", draft_id, draft["original_content"],
+        {"content": edited_content, "reason": reason, "timestamp": now_iso}, user["id"], company_id,
+    )
+    return {**draft, "edited_content": edited_content, "human_edited": True, "edit_delta": changed_fields, "edit_history": draft.get("edit_history", []) + [history_item], "updated_at": now_iso}
+
+
+def _whatsapp_configuration(company_id: str) -> WhatsAppConfiguration:
+    return whatsapp_configuration_for_company(company_id)
+
+
+async def _load_whatsapp_chain(draft_id: str, company_id: str) -> tuple:
+    draft = await db.message_drafts.find_one({"company_id": company_id, "message_draft_id": draft_id}, {"_id": 0})
+    if not draft:
+        raise HTTPException(status_code=404, detail="Message Draft não encontrado")
+    communication = await db.communication_requests.find_one(
+        {"company_id": company_id, "request_id": draft.get("communication_request_id")}, {"_id": 0}
+    )
+    job = await db.execution_jobs.find_one(
+        {"company_id": company_id, "execution_job_id": draft.get("execution_job_id")}, {"_id": 0}
+    )
+    plan = await db.action_plans.find_one(
+        {"company_id": company_id, "action_plan_id": draft.get("action_plan_id")}, {"_id": 0}
+    )
+    opportunity = await db.opportunities.find_one(
+        {"company_id": company_id, "id": draft.get("opportunity_id"), "deleted": {"$ne": True}}, {"_id": 0}
+    )
+    if not all([communication, job, plan, opportunity]):
+        raise HTTPException(status_code=409, detail="WhatsApp blocked: cadeia comercial incompleta")
+    if plan.get("status") != "APPROVED":
+        raise HTTPException(status_code=409, detail="MISSING_APPROVAL")
+    client_doc = None
+    if opportunity.get("client_id"):
+        client_doc = await db.clients.find_one(
+            {"company_id": company_id, "id": opportunity["client_id"], "deleted": {"$ne": True}}, {"_id": 0}
+        )
+    if not client_doc:
+        raise HTTPException(status_code=409, detail="INVALID_RECIPIENT")
+    consent = await db.whatsapp_recipient_consents.find_one(
+        {"company_id": company_id, "client_id": client_doc["id"]}, {"_id": 0}
+    )
+    conversation = await db.whatsapp_conversations.find_one(
+        {"company_id": company_id, "client_id": client_doc["id"]}, {"_id": 0}
+    )
+    return draft, communication, job, plan, opportunity, client_doc, consent, conversation
+
+
+async def _whatsapp_usage_snapshot(company_id: str, now: datetime | None = None) -> dict:
+    now = now or datetime.now(timezone.utc)
+    day = now.date().isoformat()
+    month = now.strftime("%Y-%m")
+    daily = await db.whatsapp_usage.find({"company_id": company_id, "day": day}, {"_id": 0}).to_list(1000)
+    monthly = await db.whatsapp_usage.find({"company_id": company_id, "month": month}, {"_id": 0}).to_list(10000)
+    latest = await db.whatsapp_messages.find_one(
+        {"company_id": company_id, "sent_at": {"$ne": None}}, {"_id": 0}, sort=[("sent_at", -1)]
+    )
+    return {
+        "day": day,
+        "month": month,
+        "daily_count": sum(item.get("count", 0) for item in daily),
+        "monthly_count": sum(item.get("count", 0) for item in monthly),
+        "daily_cost": round(sum(item.get("estimated_cost", 0.0) for item in daily), 6),
+        "monthly_cost": round(sum(item.get("estimated_cost", 0.0) for item in monthly), 6),
+        "last_sent_at": latest.get("sent_at") if latest else None,
+    }
+
+
+@api_router.post("/whatsapp/test/health")
+async def whatsapp_health(user=Depends(get_current_user)):
+    company_id = _safe_company_id(user)
+    try:
+        configuration = _whatsapp_configuration(company_id)
+    except ValueError:
+        configuration = WhatsAppConfiguration()
+    state = configuration.public_state()
+    usage = await _whatsapp_usage_snapshot(company_id)
+    return {
+        "provider": "meta_whatsapp_cloud_api",
+        "provider_version": "1.0.0",
+        "company_configured": configuration.configured_company_id == company_id,
+        "network_probe_performed": False,
+        "usage": usage,
+        **state,
+    }
+
+
+@api_router.post("/whatsapp/consents/{client_id}")
+async def register_whatsapp_consent(client_id: str, request: Request, user=Depends(get_current_user)):
+    company_id = _safe_company_id(user)
+    client_doc = await db.clients.find_one({"company_id": company_id, "id": client_id, "deleted": {"$ne": True}}, {"_id": 0})
+    if not client_doc:
+        raise HTTPException(status_code=404, detail="Cliente não encontrado")
+    body = await request.json()
+    status = str(body.get("status") or "").upper()
+    if status not in {"OPTED_IN", "OPTED_OUT"}:
+        raise HTTPException(status_code=400, detail="Estado de consentimento inválido")
+    evidence = str(body.get("evidence") or "").strip()
+    source = str(body.get("source") or "").strip()
+    if not evidence or not source:
+        raise HTTPException(status_code=400, detail="Evidência e origem do consentimento são obrigatórias")
+    now_iso = datetime.now(timezone.utc).isoformat()
+    document = {
+        "company_id": company_id,
+        "client_id": client_id,
+        "status": status,
+        "blocked": status == "OPTED_OUT",
+        "evidence": evidence,
+        "source": source,
+        "recorded_by": user["id"],
+        "recorded_at": now_iso,
+        "updated_at": now_iso,
+    }
+    await db.whatsapp_recipient_consents.update_one(
+        {"company_id": company_id, "client_id": client_id}, {"$set": document}, upsert=True
+    )
+    await log_audit(
+        "WHATSAPP_OPT_OUT" if status == "OPTED_OUT" else "WHATSAPP_OPT_IN",
+        "whatsapp_consent", client_id, None, {"status": status, "source": source}, user["id"], company_id,
+    )
+    return document
+
+
+@api_router.post("/whatsapp/messages/{draft_id}/prepare")
+async def prepare_whatsapp_send(draft_id: str, request: Request, user=Depends(get_current_user)):
+    company_id = _safe_company_id(user)
+    body = await request.json()
+    allowed_fields = {"mode", "template_name", "template_language", "template_version"}
+    if set(body) - allowed_fields:
+        raise HTTPException(status_code=400, detail="Parâmetros de preparação não permitidos")
+    mode = str(body.get("mode") or "SIMULATION").upper()
+    draft, communication, job, _, _, client_doc, consent, conversation = await _load_whatsapp_chain(draft_id, company_id)
+    template = None
+    if body.get("template_name"):
+        template = await db.whatsapp_templates.find_one(
+            {
+                "company_id": company_id,
+                "name": str(body["template_name"]),
+                "language": str(body.get("template_language") or "pt_BR"),
+                "version": str(body.get("template_version") or "1"),
+            },
+            {"_id": 0},
+        )
+    message = prepare_whatsapp_message(
+        company_id, draft, communication, job, client_doc, mode, consent, conversation, template
+    )
+    message["estimated_cost"] = float((template or {}).get("estimated_cost", 0.0))
+    existing = await db.whatsapp_messages.find_one(
+        {"company_id": company_id, "idempotency_key": message["idempotency_key"]}, {"_id": 0}
+    )
+    if existing:
+        return existing
+    await db.whatsapp_messages.insert_one(message)
+    await log_audit(
+        "WHATSAPP_SEND_REQUESTED", "whatsapp_message", message["message_id"], None,
+        {"status": message["status"], "mode": mode, "recipient": message["recipient"].get("normalized_phone"), "reason": message.get("reason")},
+        user["id"], company_id,
+    )
+    return message
+
+
+@api_router.post("/whatsapp/messages/{draft_id}/send")
+async def send_whatsapp_message(draft_id: str, request: Request, user=Depends(get_current_user)):
+    company_id = _safe_company_id(user)
+    body = await request.json()
+    if set(body) - {"confirm_send"}:
+        raise HTTPException(status_code=400, detail="Parâmetros de envio não permitidos")
+    explicit_confirmation = body.get("confirm_send") is True
+    message = await db.whatsapp_messages.find_one(
+        {"company_id": company_id, "message_draft_id": draft_id}, {"_id": 0}, sort=[("created_at", -1)]
+    )
+    if not message:
+        raise HTTPException(status_code=404, detail="Mensagem WhatsApp não preparada")
+    if message.get("provider_message_id") or message.get("provider_status") == "SIMULATED":
+        return message
+    draft, communication, job, plan, _, _, consent, conversation = await _load_whatsapp_chain(draft_id, company_id)
+    if plan.get("status") != "APPROVED":
+        raise HTTPException(status_code=409, detail="MISSING_APPROVAL")
+    usage = await _whatsapp_usage_snapshot(company_id)
+    try:
+        try:
+            configuration = _whatsapp_configuration(company_id)
+        except ValueError:
+            if message["mode"] != "SIMULATION":
+                raise
+            configuration = WhatsAppConfiguration()
+        validate_send_guards(
+            message["mode"], configuration, company_id, {**message, "status": "APPROVED"}, draft,
+            communication, job, consent, usage, message.get("template"), conversation,
+            explicit_confirmation, message.get("estimated_cost", 0.0),
+        )
+    except ValueError as exc:
+        await db.whatsapp_messages.update_one(
+            {"company_id": company_id, "message_id": message["message_id"]},
+            {"$set": {"status": "BLOCKED", "reason": str(exc), "updated_at": datetime.now(timezone.utc).isoformat()}},
+        )
+        await log_audit("WHATSAPP_SEND_FAILED", "whatsapp_message", message["message_id"], None, {"error_type": str(exc)}, user["id"], company_id)
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    await log_audit("WHATSAPP_SEND_APPROVED", "whatsapp_message", message["message_id"], {"status": message["status"]}, {"status": "APPROVED"}, user["id"], company_id)
+    if message["mode"] == "SIMULATION":
+        provider = WhatsAppProviderFactory.create("SIMULATION", configuration)
+        result = provider.execute(message)
+        simulated = {**message, "status": "APPROVED", "provider_status": "SIMULATED", "result": result, "updated_at": now_iso}
+        await db.whatsapp_messages.replace_one({"company_id": company_id, "message_id": message["message_id"]}, simulated)
+        return simulated
+
+    approved_at = datetime.now(timezone.utc).isoformat()
+    approved = await db.whatsapp_messages.update_one(
+        {"company_id": company_id, "message_id": message["message_id"], "status": "PREPARED", "provider_message_id": None},
+        {"$set": {"status": "APPROVED", "approved_at": approved_at, "approved_by": user["id"], "updated_at": approved_at}},
+    )
+    if approved.modified_count != 1:
+        current = await db.whatsapp_messages.find_one({"company_id": company_id, "message_id": message["message_id"]}, {"_id": 0})
+        return current
+    claimed = await db.whatsapp_messages.update_one(
+        {"company_id": company_id, "message_id": message["message_id"], "status": "APPROVED", "provider_message_id": None},
+        {"$set": {"status": "SENDING", "updated_at": now_iso}},
+    )
+    if claimed.modified_count != 1:
+        current = await db.whatsapp_messages.find_one({"company_id": company_id, "message_id": message["message_id"]}, {"_id": 0})
+        return current
+    sending = {**message, "status": "SENDING", "updated_at": now_iso}
+    await log_audit("WHATSAPP_SEND_STARTED", "whatsapp_message", message["message_id"], {"status": "APPROVED"}, {"status": "SENDING"}, user["id"], company_id)
+    try:
+        provider = WhatsAppProviderFactory.create(message["mode"], configuration)
+        result = provider.execute(sending)
+        accepted = {
+            **sending,
+            "provider_message_id": result["provider_message_id"],
+            "provider_status": "ACCEPTED",
+            "result": result,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }
+        await db.whatsapp_messages.replace_one({"company_id": company_id, "message_id": message["message_id"]}, accepted)
+        await db.whatsapp_usage.update_one(
+            {
+                "company_id": company_id, "day": usage["day"], "month": usage["month"],
+                "message_type": message["payload"]["message_type"],
+                "template_name": (message.get("template") or {}).get("name"), "status": "ACCEPTED",
+            },
+            {"$inc": {"count": 1, "estimated_cost": message.get("estimated_cost", 0.0)}, "$set": {"updated_at": datetime.now(timezone.utc).isoformat()}},
+            upsert=True,
+        )
+        await log_audit("WHATSAPP_SEND_SUCCEEDED", "whatsapp_message", message["message_id"], {"status": "SENDING"}, {"provider_status": "ACCEPTED", "provider_message_id": result["provider_message_id"]}, user["id"], company_id)
+        return accepted
+    except WhatsAppProviderError as exc:
+        failed_at = datetime.now(timezone.utc).isoformat()
+        failed = {**sending, "status": "FAILED", "provider_status": "FAILED", "failed_at": failed_at, "updated_at": failed_at, **exc.as_result()}
+        await db.whatsapp_messages.replace_one({"company_id": company_id, "message_id": message["message_id"]}, failed)
+        await log_audit("WHATSAPP_SEND_FAILED", "whatsapp_message", message["message_id"], {"status": "SENDING"}, exc.as_result(), user["id"], company_id)
+        raise HTTPException(status_code=502, detail=exc.error_type) from exc
+
+
+@api_router.get("/whatsapp/messages/{message_id}")
+async def get_whatsapp_message(message_id: str, user=Depends(get_current_user)):
+    message = await db.whatsapp_messages.find_one(
+        {"company_id": _safe_company_id(user), "message_id": message_id}, {"_id": 0}
+    )
+    if not message:
+        raise HTTPException(status_code=404, detail="Mensagem WhatsApp não encontrada")
+    return message
+
+
+@api_router.get("/whatsapp/messages")
+async def list_whatsapp_messages(
+    opportunity_id: str | None = None,
+    status: str | None = None,
+    mode: str | None = None,
+    user=Depends(get_current_user),
+):
+    query: dict = {"company_id": _safe_company_id(user)}
+    if opportunity_id:
+        query["opportunity_id"] = opportunity_id
+    if status:
+        query["status"] = status
+    if mode:
+        query["mode"] = mode
+    return await db.whatsapp_messages.find(query, {"_id": 0}).sort("created_at", -1).to_list(10000)
+
+
+@api_router.get("/whatsapp/conversations/{client_id}")
+async def get_whatsapp_conversation(client_id: str, user=Depends(get_current_user)):
+    company_id = _safe_company_id(user)
+    client_doc = await db.clients.find_one({"company_id": company_id, "id": client_id, "deleted": {"$ne": True}}, {"_id": 0})
+    if not client_doc:
+        raise HTTPException(status_code=404, detail="Cliente não encontrado")
+    conversation = await db.whatsapp_conversations.find_one({"company_id": company_id, "client_id": client_id}, {"_id": 0})
+    messages = await db.whatsapp_messages.find({"company_id": company_id, "client_id": client_id}, {"_id": 0}).sort("created_at", -1).to_list(1000)
+    consent = await db.whatsapp_recipient_consents.find_one({"company_id": company_id, "client_id": client_id}, {"_id": 0})
+    return {"conversation": conversation, "messages": messages, "consent": consent}
+
+
+@api_router.get("/webhooks/whatsapp", response_class=PlainTextResponse)
+async def verify_whatsapp_webhook(request: Request):
+    for configuration in whatsapp_configurations_from_env():
+        try:
+            challenge = verify_webhook_challenge(
+                request.query_params.get("hub.mode"), request.query_params.get("hub.challenge"),
+                request.query_params.get("hub.verify_token"), configuration.verify_token,
+            )
+            return PlainTextResponse(challenge)
+        except ValueError:
+            continue
+    raise HTTPException(status_code=403, detail="WEBHOOK_VERIFICATION_FAILED")
+
+
+@api_router.post("/webhooks/whatsapp")
+async def receive_whatsapp_webhook(request: Request):
+    raw_body = await request.body()
+    configurations = [
+        item for item in whatsapp_configurations_from_env()
+        if verify_webhook_signature(raw_body, request.headers.get("X-Hub-Signature-256"), item.app_secret)
+    ]
+    if len(configurations) != 1:
+        raise HTTPException(status_code=403, detail="INVALID_WEBHOOK_SIGNATURE")
+    configuration = configurations[0]
+    try:
+        payload = json.loads(raw_body.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise HTTPException(status_code=400, detail="INVALID_WEBHOOK_PAYLOAD") from exc
+    if payload.get("object") != "whatsapp_business_account":
+        raise HTTPException(status_code=400, detail="INVALID_WEBHOOK_OBJECT")
+    company_id = configuration.configured_company_id
+    if not company_id:
+        raise HTTPException(status_code=503, detail="WHATSAPP_CONFIGURATION_INCOMPLETE")
+    processed = 0
+    duplicates = 0
+    for event in parse_webhook_events(payload):
+        if event.get("waba_id") != configuration.business_account_id or event.get("phone_number_id") != configuration.phone_number_id:
+            continue
+        exists = await db.whatsapp_webhook_events.find_one({"provider_event_id": event["provider_event_id"]}, {"_id": 1})
+        if exists:
+            duplicates += 1
+            continue
+        now_iso = datetime.now(timezone.utc).isoformat()
+        stored_event = {key: value for key, value in event.items() if key != "raw"}
+        business_event = {
+            "SENT": "MESSAGE_SENT", "DELIVERED": "MESSAGE_DELIVERED", "READ": "MESSAGE_READ",
+            "FAILED": "MESSAGE_FAILED", "RECEIVED": "MESSAGE_RECEIVED",
+        }.get(event["event_type"])
+        stored_event.update({"company_id": company_id, "business_event": business_event, "created_at": now_iso})
+        await db.whatsapp_webhook_events.insert_one(stored_event)
+        processed += 1
+        if event["event_type"] in {"SENT", "DELIVERED", "READ", "FAILED"}:
+            message = await db.whatsapp_messages.find_one(
+                {"company_id": company_id, "provider_message_id": event.get("provider_message_id")}, {"_id": 0}
+            )
+            if message:
+                target = event["event_type"]
+                try:
+                    transition_whatsapp_status(message["status"], target)
+                except ValueError:
+                    target = message["status"]
+                timestamp_field = {"SENT": "sent_at", "DELIVERED": "delivered_at", "READ": "read_at", "FAILED": "failed_at"}[event["event_type"]]
+                update = {"status": target, "provider_status": event["provider_status"], timestamp_field: now_iso, "updated_at": now_iso}
+                if event.get("error"):
+                    update["error_code"] = event["error"].get("code")
+                    update["error_message"] = event["error"].get("error_data", {}).get("details") or event["error"].get("message")
+                await db.whatsapp_messages.update_one({"company_id": company_id, "message_id": message["message_id"]}, {"$set": update})
+                await log_audit("WHATSAPP_STATUS_RECEIVED", "whatsapp_message", message["message_id"], {"status": message["status"]}, {"status": target}, None, company_id)
+        elif event["event_type"] == "RECEIVED":
+            normalized = normalize_brazil_phone(event.get("recipient"))
+            matches = []
+            if normalized.valid:
+                candidates = await db.clients.find({"company_id": company_id, "phone": {"$nin": [None, ""]}, "deleted": {"$ne": True}}, {"_id": 0, "id": 1, "phone": 1}).to_list(10000)
+                matches = [candidate for candidate in candidates if normalize_brazil_phone(candidate.get("phone")).normalized_phone == normalized.normalized_phone]
+            client_id = matches[0]["id"] if len(matches) == 1 else None
+            previous_outbound = None
+            if client_id:
+                previous_outbound = await db.whatsapp_messages.find_one(
+                    {"company_id": company_id, "client_id": client_id, "direction": {"$ne": "INBOUND"}},
+                    {"_id": 0}, sort=[("created_at", -1)]
+                )
+            inbound_id = "inbound-" + hashlib.sha256(str(event["provider_event_id"]).encode()).hexdigest()[:24]
+            inbound = {
+                "company_id": company_id, "message_id": inbound_id, "provider_message_id": event.get("provider_message_id"),
+                "client_id": client_id, "recipient": {"original_phone": event.get("recipient"), "normalized_phone": normalized.normalized_phone},
+                "direction": "INBOUND", "status": "RECEIVED", "provider_status": "received", "message_type": event.get("message_type"),
+                "inbound_message": {"text": event.get("text")}, "correlation": "MATCHED" if client_id else "UNKNOWN",
+                "opportunity_id": previous_outbound.get("opportunity_id") if previous_outbound else None,
+                "communication_request_id": previous_outbound.get("communication_request_id") if previous_outbound else None,
+                "message_draft_id": previous_outbound.get("message_draft_id") if previous_outbound else None,
+                "execution_job_id": previous_outbound.get("execution_job_id") if previous_outbound else None,
+                "business_event": "MESSAGE_REPLIED" if previous_outbound else "MESSAGE_RECEIVED",
+                "created_at": now_iso, "updated_at": now_iso,
+            }
+            await db.whatsapp_messages.insert_one(inbound)
+            if client_id:
+                await db.whatsapp_conversations.update_one(
+                    {"company_id": company_id, "client_id": client_id},
+                    {"$set": {"company_id": company_id, "client_id": client_id, "last_received_at": now_iso, "updated_at": now_iso}, "$setOnInsert": {"created_at": now_iso}},
+                    upsert=True,
+                )
+                if detect_opt_out(event.get("text")):
+                    await db.whatsapp_recipient_consents.update_one(
+                        {"company_id": company_id, "client_id": client_id},
+                        {"$set": {"company_id": company_id, "client_id": client_id, "status": "OPTED_OUT", "blocked": True, "source": "WHATSAPP_INBOUND", "evidence": event.get("text"), "recorded_at": now_iso, "updated_at": now_iso}},
+                        upsert=True,
+                    )
+                    await log_audit("WHATSAPP_OPT_OUT", "whatsapp_consent", client_id, None, {"status": "OPTED_OUT", "source": "WHATSAPP_INBOUND"}, None, company_id)
+            await log_audit("WHATSAPP_MESSAGE_RECEIVED", "whatsapp_message", inbound_id, None, {"client_id": client_id, "correlation": inbound["correlation"]}, None, company_id)
+    return {"received": True, "processed": processed, "duplicates": duplicates}
+
+
+@api_router.get("/imports/{batch_id}/standard-records")
+async def get_standard_records(batch_id: str, user=Depends(get_current_user)):
+    company_id = _safe_company_id(user)
+    return await db.standard_records.find({"company_id": company_id, "import_batch_id": batch_id}, {"_id": 0}).sort("created_at", 1).to_list(100000)
+
+
+@api_router.delete("/imports/{batch_id}")
+async def delete_import_batch(batch_id: str, user=Depends(get_current_user)):
+    company_id = _safe_company_id(user)
+    batch = await db.import_batches.find_one({"id": batch_id, "company_id": company_id, "deleted": {"$ne": True}}, {"_id": 0})
+    if not batch:
+        raise HTTPException(status_code=404, detail="Importação não encontrada")
+
+    await db.import_batches.update_one({"id": batch_id}, {"$set": {"deleted": True, "status": "CANCELLED", "updated_at": datetime.now(timezone.utc).isoformat()}})
+    await log_audit(
+        action="IMPORT_CANCELLED",
+        entity_type="import_batch",
+        entity_id=batch_id,
+        old_value=batch,
+        new_value={**batch, "deleted": True, "status": "CANCELLED"},
+        user_id=user["id"],
+        company_id=company_id,
+    )
+    return {"ok": True, "status": "CANCELLED"}
 
 # ---------- Stats / Dashboard ----------
 @api_router.get("/stats")
