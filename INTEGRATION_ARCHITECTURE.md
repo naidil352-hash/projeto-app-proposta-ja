@@ -35,3 +35,11 @@ It supports the labels `CSV`, `XLSX` and `TABULAR`, but it never opens a file.
 An explicit header mapping converts each row into a canonical Integration Hub
 event and preview. Duplicate headers, unknown mapped headers and a header
 mapped to more than one canonical field are rejected.
+
+## Phase 4.2: local persistence boundary
+
+`modules/integration_hub/repository.py` receives an injected database and does
+not create a Mongo client. It persists only non-secret connection metadata and
+tenant-scoped canonical events. A connection is unique per company and an
+event is unique per company, connection and idempotency key. Routes, workers
+and provider adapters remain out of scope.
