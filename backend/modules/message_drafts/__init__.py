@@ -1,0 +1,1 @@
+"""Message Draft persistence boundary."""
