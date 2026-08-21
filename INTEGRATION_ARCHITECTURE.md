@@ -43,3 +43,11 @@ not create a Mongo client. It persists only non-secret connection metadata and
 tenant-scoped canonical events. A connection is unique per company and an
 event is unique per company, connection and idempotency key. Routes, workers
 and provider adapters remain out of scope.
+
+## Phase 4.3: provider contract and registry
+
+`modules/integration_hub/adapters.py` declares static provider capabilities;
+it contains no transport, credentials or network code. The registry permits
+only explicitly registered providers. `service.py` combines a persisted
+tenant-scoped connection, a registered capability and an existing canonical
+event into a preview. It never calls an adapter for external I/O.
