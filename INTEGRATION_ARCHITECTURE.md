@@ -51,3 +51,10 @@ it contains no transport, credentials or network code. The registry permits
 only explicitly registered providers. `service.py` combines a persisted
 tenant-scoped connection, a registered capability and an existing canonical
 event into a preview. It never calls an adapter for external I/O.
+
+## Phase 4.4: protected internal routes
+
+The `/api/integrations` router is authenticated and derives `company_id` only
+from the current user. It manages non-secret connection metadata and previews;
+it has no OAuth, webhook, external client or real provider adapter. Events are
+stored only after a tenant-scoped preview is accepted.

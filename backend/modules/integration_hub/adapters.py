@@ -89,3 +89,14 @@ def connection_state(connection: dict) -> ConnectionState:
     if not connection.get("enabled"):
         return ConnectionState.DISABLED
     return ConnectionState.READY_FOR_PREVIEW
+
+
+def create_default_registry() -> ProviderRegistry:
+    """Return the only local-only provider available before real adapters exist."""
+    registry = ProviderRegistry()
+    registry.register(ProviderAdapter.from_capabilities("generic_file", [
+        (entity, operation)
+        for entity in CANONICAL_ENTITIES
+        for operation in ProviderOperation
+    ]))
+    return registry

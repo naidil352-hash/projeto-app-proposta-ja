@@ -72,6 +72,8 @@ from modules.message_drafts.repository import (
     load_message_draft_inputs,
 )
 from modules.startup.indexes import ensure_indexes
+from modules.integration_hub.adapters import create_default_registry
+from modules.integration_hub.router import create_integration_hub_router
 from whatsapp_integration import (
     WhatsAppConfiguration,
     WhatsAppProviderError,
@@ -7680,6 +7682,7 @@ async def public_features():
 
 
 # ---------- Register router + middleware ----------
+api_router.include_router(create_integration_hub_router(lambda: db, get_current_user, _safe_company_id, create_default_registry()))
 app.include_router(api_router)
 
 app.add_middleware(

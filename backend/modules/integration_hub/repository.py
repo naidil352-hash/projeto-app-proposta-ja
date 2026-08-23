@@ -66,6 +66,16 @@ class IntegrationHubRepository:
             {"company_id": company_id, "connection_id": connection_id}, {"_id": 0}
         )
 
+    async def list_connections(self, company_id: str) -> list[dict[str, Any]]:
+        return await self._connections.find(
+            {"company_id": company_id}, {"_id": 0}
+        ).sort("connection_id", 1).to_list(1000)
+
+    async def list_events(self, company_id: str, connection_id: str) -> list[dict[str, Any]]:
+        return await self._events.find(
+            {"company_id": company_id, "connection_id": connection_id}, {"_id": 0}
+        ).sort("persisted_at", -1).to_list(1000)
+
     async def record_event(self, event: Mapping[str, Any]) -> tuple[dict[str, Any], bool]:
         required = ("company_id", "connection_id", "idempotency_key", "event_id", "entity", "operation")
         if not isinstance(event, Mapping) or any(not str(event.get(field) or "").strip() for field in required):
