@@ -145,6 +145,8 @@ export default function NewProposal() {
   const [loadingProposal, setLoadingProposal] = useState(false);
   const [upgradeOpen, setUpgradeOpen] = useState(false);
   const [upgradeMsg, setUpgradeMsg] = useState<string | undefined>();
+  const [editingItemIndex, setEditingItemIndex] = useState<number | null>(null);
+  const [editingItem, setEditingItem] = useState<Product | null>(null);
   
   // Controla qual item está com o dropdown ativo focado para evitar sobreposição visual
   const [focusedIndex, setFocusedIndex] = useState<number | null>(null);
@@ -187,6 +189,8 @@ export default function NewProposal() {
     setClientState("");
     setClientAddress("");
     setClientId("");
+    setEditingItemIndex(null);
+    setEditingItem(null);
   };
   useEffect(() => {
     if (!editId) {
@@ -209,6 +213,12 @@ export default function NewProposal() {
       try {
         setLoadingProposal(true);
         const { data } = await api.get(`/proposals/${editId}`);
+
+        if (data.acceptance_status === "accepted") {
+          Alert.alert("Atenção", "Esta proposta já foi aceita e não pode ser editada.");
+          router.replace(`/proposal/${editId}`);
+          return;
+        }
 
         setClientName(data.client_name || "");
         setDoc(data.client_document || "");
@@ -280,6 +290,50 @@ export default function NewProposal() {
 
 	  const removeProduct = (i: number) => {
     setProducts((prev) => prev.filter((_, idx) => idx !== i));
+    if (editingItemIndex === i) {
+      setEditingItemIndex(null);
+      setEditingItem(null);
+    }
+  };
+
+  const startEditingItem = (item: Product, index: number) => {
+    setEditingItemIndex(index);
+    setEditingItem({ ...item });
+  };
+
+  const cancelEditingItem = () => {
+    setEditingItemIndex(null);
+    setEditingItem(null);
+  };
+
+  const saveEditingItem = () => {
+    if (editingItemIndex === null || !editingItem) return;
+
+    const quantity = parseNumber(editingItem.quantity);
+    const unitPrice = parseCurrency(editingItem.price);
+    if (!editingItem.name.trim()) {
+      Alert.alert("Erro", "O nome do item é obrigatório.");
+      return;
+    }
+    if (quantity <= 0) {
+      Alert.alert("Erro", "A quantidade deve ser maior que zero.");
+      return;
+    }
+    if (unitPrice < 0) {
+      Alert.alert("Erro", "O preço unitário deve ser maior ou igual a zero.");
+      return;
+    }
+
+    const updatedItem = {
+      ...editingItem,
+      name: editingItem.name.trim(),
+      description: editingItem.description?.trim() || "",
+      unit: editingItem.unit?.trim() || "UN",
+      quantity: String(quantity),
+      price: formatCurrencyFromBackend(unitPrice),
+    };
+    setProducts((prev) => prev.map((item, index) => index === editingItemIndex ? updatedItem : item));
+    cancelEditingItem();
   };
 
   const handleAddItem = () => {
@@ -513,7 +567,22 @@ export default function NewProposal() {
             Nenhum item adicionado à proposta.
           </Text>
         ) : (
-          products.map((p, i) => (
+          products.map((p, i) => editingItemIndex === i && editingItem ? (
+            <View key={p.id} style={s.itemEditor}>
+              {p.product_id ? <Text style={s.catalogLinkNotice}>Vinculado ao catálogo: {p.code || p.product_id}</Text> : null}
+              <TextInput style={s.itemEditorInput} value={editingItem.name} onChangeText={(name) => setEditingItem((current) => current ? { ...current, name } : current)} placeholder="Nome" />
+              <TextInput style={[s.itemEditorInput, s.itemEditorDescription]} value={editingItem.description || ""} onChangeText={(description) => setEditingItem((current) => current ? { ...current, description } : current)} placeholder="Descrição" multiline />
+              <View style={s.itemEditorFields}>
+                <TextInput style={[s.itemEditorInput, s.itemEditorField]} value={editingItem.quantity} onChangeText={(quantity) => setEditingItem((current) => current ? { ...current, quantity: quantity.replace(/[^0-9,.]/g, "") } : current)} placeholder="Quantidade" keyboardType="decimal-pad" />
+                <TextInput style={[s.itemEditorInput, s.itemEditorField]} value={editingItem.price} onChangeText={(price) => setEditingItem((current) => current ? { ...current, price: maskCurrency(price) } : current)} placeholder="Preço unitário" keyboardType="decimal-pad" />
+                <TextInput style={[s.itemEditorInput, s.itemEditorField]} value={editingItem.unit || ""} onChangeText={(unit) => setEditingItem((current) => current ? { ...current, unit } : current)} placeholder="Unidade" autoCapitalize="characters" />
+              </View>
+              <View style={s.itemEditorActions}>
+                <TouchableOpacity style={s.itemEditorCancel} onPress={cancelEditingItem}><Text style={s.itemEditorCancelText}>Cancelar</Text></TouchableOpacity>
+                <TouchableOpacity style={s.itemEditorSave} onPress={saveEditingItem}><Text style={s.itemEditorSaveText}>Salvar item</Text></TouchableOpacity>
+              </View>
+            </View>
+          ) : (
             <View key={p.id} style={s.addedProductRow}>
               <View style={{ flex: 1 }}>
                 <Text style={s.addedProductTitle}>
@@ -535,6 +604,9 @@ export default function NewProposal() {
                 <Text style={s.addedProductTotal}>
                   {formatCurrency((parseNumber(p.quantity) || 0) * (parseCurrency(p.price) || 0))}
                 </Text>
+                <TouchableOpacity onPress={() => startEditingItem(p, i)} accessibilityLabel={`Editar ${p.name}`}>
+                  <Ionicons name="create-outline" size={20} color={theme.colors.primary} />
+                </TouchableOpacity>
                 <TouchableOpacity onPress={() => removeProduct(i)}>
                   <Ionicons name="trash-outline" size={20} color={theme.colors.danger} />
                 </TouchableOpacity>
@@ -620,6 +692,10 @@ export default function NewProposal() {
       if (p.product_id) {
         return {
           product_id: p.product_id,
+          name: p.name.trim(),
+          description: p.description || "",
+          unit: p.unit || "UN",
+          unit_price: parseCurrency(p.price),
           quantity: parseNumber(p.quantity),
         };
       } else {
@@ -1704,6 +1780,66 @@ const s = StyleSheet.create({
     fontSize: 15,
     fontWeight: "700",
     color: theme.colors.text,
+  },
+  itemEditor: {
+    padding: 12,
+    backgroundColor: "#F8FAFC",
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: theme.colors.primary,
+    marginBottom: 8,
+    gap: 8,
+  },
+  catalogLinkNotice: {
+    color: theme.colors.primary,
+    fontSize: 12,
+    fontWeight: "700",
+  },
+  itemEditorInput: {
+    minHeight: 44,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    backgroundColor: "#fff",
+    color: theme.colors.text,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+  },
+  itemEditorDescription: {
+    minHeight: 68,
+    textAlignVertical: "top",
+  },
+  itemEditorFields: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+  },
+  itemEditorField: {
+    flex: 1,
+    minWidth: 120,
+  },
+  itemEditorActions: {
+    flexDirection: "row",
+    justifyContent: "flex-end",
+    gap: 8,
+  },
+  itemEditorCancel: {
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+  },
+  itemEditorCancelText: {
+    color: theme.colors.textSec,
+    fontWeight: "700",
+  },
+  itemEditorSave: {
+    backgroundColor: theme.colors.primary,
+    borderRadius: 8,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+  },
+  itemEditorSaveText: {
+    color: "#fff",
+    fontWeight: "700",
   },
   selectorBox: {
     padding: 14,

@@ -2398,6 +2398,9 @@ async def update_proposal(pid: str, data: ProposalIn, user=Depends(get_current_u
     resolved_products = []
     subtotal = 0.0
     for item in data.products:
+        if item.quantity <= 0:
+            raise HTTPException(status_code=422, detail="A quantidade do item deve ser maior que zero")
+
         if item.product_id and item.product_id.strip():
             p_doc = await db.products.find_one({
                 "id": item.product_id,
@@ -2408,16 +2411,25 @@ async def update_proposal(pid: str, data: ProposalIn, user=Depends(get_current_u
             if not p_doc:
                 raise HTTPException(status_code=404, detail="Produto não encontrado")
             
-            item_total = round(item.quantity * p_doc["price"], 2)
+            resolved_name = item.name.strip() if item.name and item.name.strip() else p_doc["name"]
+            resolved_description = item.description if item.description is not None else p_doc.get("description", "")
+            resolved_unit = item.unit.strip() if item.unit and item.unit.strip() else p_doc.get("unit", "UN")
+            resolved_unit_price = item.unit_price if item.unit_price is not None else item.price
+            if resolved_unit_price is None:
+                resolved_unit_price = p_doc["price"]
+            if resolved_unit_price < 0:
+                raise HTTPException(status_code=422, detail="O preço unitário deve ser maior ou igual a zero")
+
+            item_total = round(item.quantity * resolved_unit_price, 2)
             subtotal += item_total
             resolved_products.append({
                 "product_id": item.product_id,
                 "code": p_doc["code"],
-                "name": p_doc["name"],
-                "description": p_doc.get("description", ""),
-                "unit": p_doc.get("unit", "UN"),
+                "name": resolved_name,
+                "description": resolved_description,
+                "unit": resolved_unit,
                 "quantity": item.quantity,
-                "unit_price": p_doc["price"],
+                "unit_price": resolved_unit_price,
                 "total": item_total,
                 "item_type": "catalog"
             })
@@ -2425,6 +2437,8 @@ async def update_proposal(pid: str, data: ProposalIn, user=Depends(get_current_u
             resolved_unit_price = item.unit_price if item.unit_price is not None else item.price
             if not item.name or not item.name.strip() or resolved_unit_price is None or item.quantity is None:
                 raise HTTPException(status_code=422, detail="Item manual requer name, unit_price e quantity")
+            if resolved_unit_price < 0:
+                raise HTTPException(status_code=422, detail="O preço unitário deve ser maior ou igual a zero")
             
             item_total = round(item.quantity * resolved_unit_price, 2)
             subtotal += item_total
