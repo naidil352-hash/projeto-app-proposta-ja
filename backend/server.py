@@ -75,7 +75,7 @@ from modules.message_drafts.repository import (
 from modules.startup.indexes import ensure_indexes
 from modules.integration_hub.adapters import create_default_registry
 from modules.integration_hub.router import create_integration_hub_router
-from bling_oauth import BlingOAuthConfiguration, BlingOAuthError
+from bling_oauth import BlingApiError, BlingOAuthConfiguration, BlingOAuthError
 from whatsapp_integration import (
     WhatsAppConfiguration,
     WhatsAppProviderError,
@@ -7734,6 +7734,59 @@ async def begin_bling_connection(user: dict = Depends(get_current_user)):
         "consumed_at": None,
     })
     return {"authorization_url": configuration.authorization_url(state)}
+
+
+async def _bling_read(company_id: str, path: str, params: dict[str, str | int] | None = None) -> dict:
+    configuration = _bling_configuration()
+    credential = await db.integration_credentials.find_one({"company_id": company_id, "provider": "bling"})
+    if not credential:
+        raise HTTPException(status_code=409, detail="Bling connection is required")
+    access_token = configuration.decrypt(credential["access_token_encrypted"])
+    try:
+        return await asyncio.to_thread(configuration.get_json, path, access_token, params)
+    except BlingApiError as exc:
+        if exc.status_code != 401:
+            if exc.status_code == 403:
+                raise HTTPException(status_code=403, detail="The Bling application does not have this read permission") from exc
+            raise HTTPException(status_code=502, detail="Bling could not provide the requested preview") from exc
+    refresh_token = configuration.decrypt(credential["refresh_token_encrypted"])
+    try:
+        refreshed = await asyncio.to_thread(configuration.refresh_access_token, refresh_token)
+        await db.integration_credentials.update_one(
+            {"company_id": company_id, "provider": "bling"},
+            {"$set": {"access_token_encrypted": configuration.encrypt(refreshed["access_token"]), "refresh_token_encrypted": configuration.encrypt(refreshed["refresh_token"]), "expires_in": refreshed.get("expires_in"), "updated_at": datetime.now(timezone.utc).isoformat()}},
+        )
+        return await asyncio.to_thread(configuration.get_json, path, refreshed["access_token"], params)
+    except BlingOAuthError as exc:
+        raise HTTPException(status_code=502, detail="Bling authorization needs to be renewed") from exc
+
+
+def _bling_preview_record(record: dict) -> dict:
+    contact = record.get("contato") if isinstance(record.get("contato"), dict) else {}
+    client = record.get("cliente") if isinstance(record.get("cliente"), dict) else {}
+    situation = record.get("situacao")
+    return {
+        "external_id": str(record.get("id", "")),
+        "number": str(record.get("numero") or record.get("numeroOrcamento") or record.get("id", "")),
+        "date": record.get("data") or record.get("dataEmissao"),
+        "total": record.get("total") or record.get("valorTotal") or 0,
+        "client_name": contact.get("nome") or client.get("nome") or "Cliente não informado",
+        "status": situation.get("valor") if isinstance(situation, dict) else (situation or ""),
+    }
+
+
+@api_router.get("/integrations/bling/commercial-proposals")
+async def preview_bling_commercial_proposals(limit: int = Query(default=25, ge=1, le=100), user: dict = Depends(get_current_user)):
+    try:
+        payload = await _bling_read(_safe_company_id(user), "/propostas-comerciais", {"limite": limit})
+    except BlingOAuthError as exc:
+        raise HTTPException(status_code=503, detail="Bling integration is not configured") from exc
+    records = payload.get("data", [])
+    if isinstance(records, dict):
+        records = [records]
+    if not isinstance(records, list):
+        records = []
+    return {"mode": "PREVIEW", "total": len(records), "proposals": [_bling_preview_record(record) for record in records if isinstance(record, dict)]}
 
 
 @api_router.get("/integrations/bling/callback", response_class=HTMLResponse)

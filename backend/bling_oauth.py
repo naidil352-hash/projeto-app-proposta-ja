@@ -23,6 +23,12 @@ class BlingOAuthError(RuntimeError):
     pass
 
 
+class BlingApiError(BlingOAuthError):
+    def __init__(self, status_code: int, message: str = "Bling request failed"):
+        self.status_code = status_code
+        super().__init__(message)
+
+
 @dataclass(frozen=True)
 class BlingOAuthConfiguration:
     client_id: str
@@ -57,12 +63,18 @@ class BlingOAuthConfiguration:
             raise BlingOAuthError("stored Bling token cannot be decrypted") from exc
 
     def exchange_code(self, code: str) -> dict:
+        return self._token_request({"grant_type": "authorization_code", "code": code})
+
+    def refresh_access_token(self, refresh_token: str) -> dict:
+        return self._token_request({"grant_type": "refresh_token", "refresh_token": refresh_token})
+
+    def _token_request(self, body: dict[str, str]) -> dict:
         credentials = base64.b64encode(f"{self.client_id}:{self.client_secret}".encode()).decode()
         try:
             response = requests.post(
                 TOKEN_URL,
                 headers={"Authorization": f"Basic {credentials}", "Content-Type": "application/x-www-form-urlencoded", "Accept": "1.0", "enable-jwt": "1"},
-                data={"grant_type": "authorization_code", "code": code},
+                data=body,
                 timeout=15,
             )
         except requests.RequestException as exc:
@@ -72,4 +84,21 @@ class BlingOAuthConfiguration:
         payload = response.json()
         if not payload.get("access_token") or not payload.get("refresh_token"):
             raise BlingOAuthError("Bling returned an incomplete token response")
+        return payload
+
+    def get_json(self, path: str, access_token: str, params: dict[str, str | int] | None = None) -> dict:
+        try:
+            response = requests.get(
+                "https://api.bling.com.br/Api/v3" + path,
+                headers={"Authorization": f"Bearer {access_token}", "Accept": "application/json", "enable-jwt": "1"},
+                params=params,
+                timeout=15,
+            )
+        except requests.RequestException as exc:
+            raise BlingOAuthError("Bling service is unavailable") from exc
+        if not response.ok:
+            raise BlingApiError(response.status_code)
+        payload = response.json()
+        if not isinstance(payload, dict):
+            raise BlingOAuthError("Bling returned an invalid response")
         return payload
