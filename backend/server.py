@@ -12,6 +12,7 @@ import hashlib
 import logging
 import asyncio
 import zipfile
+import secrets
 import bcrypt
 import jwt
 from datetime import datetime, timezone, timedelta
@@ -74,6 +75,7 @@ from modules.message_drafts.repository import (
 from modules.startup.indexes import ensure_indexes
 from modules.integration_hub.adapters import create_default_registry
 from modules.integration_hub.router import create_integration_hub_router
+from bling_oauth import BlingOAuthConfiguration, BlingOAuthError
 from whatsapp_integration import (
     WhatsAppConfiguration,
     WhatsAppProviderError,
@@ -7693,6 +7695,70 @@ async def public_features():
             ]
         }
     }
+
+
+# ---------- Bling OAuth (connection only; no synchronization occurs here) ----------
+def _bling_configuration() -> BlingOAuthConfiguration:
+    return BlingOAuthConfiguration.from_environment()
+
+
+@api_router.get("/integrations/bling/status")
+async def bling_connection_status(user: dict = Depends(get_current_user)):
+    company_id = _safe_company_id(user)
+    try:
+        _bling_configuration()
+    except BlingOAuthError:
+        return {"configured": False, "connected": False}
+    credential = await db.integration_credentials.find_one(
+        {"company_id": company_id, "provider": "bling"}, {"_id": 0, "connected_at": 1}
+    )
+    return {"configured": True, "connected": bool(credential), "connected_at": credential.get("connected_at") if credential else None}
+
+
+@api_router.post("/integrations/bling/connect")
+async def begin_bling_connection(user: dict = Depends(get_current_user)):
+    try:
+        configuration = _bling_configuration()
+    except BlingOAuthError as exc:
+        raise HTTPException(status_code=503, detail="Bling integration is not configured") from exc
+
+    state = secrets.token_urlsafe(32)
+    now = datetime.now(timezone.utc)
+    await db.integration_oauth_states.insert_one({
+        "state_hash": hashlib.sha256(state.encode()).hexdigest(),
+        "provider": "bling",
+        "company_id": _safe_company_id(user),
+        "user_id": user["id"],
+        "created_at": now.isoformat(),
+        "expires_at": (now + timedelta(minutes=10)).isoformat(),
+        "consumed_at": None,
+    })
+    return {"authorization_url": configuration.authorization_url(state)}
+
+
+@api_router.get("/integrations/bling/callback", response_class=HTMLResponse)
+async def complete_bling_connection(code: str | None = None, state: str | None = None, error: str | None = None):
+    if error or not code or not state:
+        return HTMLResponse("<h1>Conexão Bling não concluída</h1><p>Retorne ao Proposta Já e tente novamente.</p>", status_code=400)
+    state_hash = hashlib.sha256(state.encode()).hexdigest()
+    oauth_state = await db.integration_oauth_states.find_one({"state_hash": state_hash, "provider": "bling"})
+    now = datetime.now(timezone.utc).isoformat()
+    if not oauth_state or oauth_state.get("consumed_at") or oauth_state.get("expires_at", "") < now:
+        return HTMLResponse("<h1>Conexão Bling não concluída</h1><p>Esta autorização expirou. Retorne ao Proposta Já e tente novamente.</p>", status_code=400)
+    try:
+        configuration = _bling_configuration()
+        tokens = await asyncio.to_thread(configuration.exchange_code, code)
+    except BlingOAuthError:
+        return HTMLResponse("<h1>Conexão Bling não concluída</h1><p>Não foi possível concluir a autorização. Retorne ao Proposta Já e tente novamente.</p>", status_code=502)
+
+    connected_at = datetime.now(timezone.utc).isoformat()
+    await db.integration_credentials.update_one(
+        {"company_id": oauth_state["company_id"], "provider": "bling"},
+        {"$set": {"company_id": oauth_state["company_id"], "provider": "bling", "access_token_encrypted": configuration.encrypt(tokens["access_token"]), "refresh_token_encrypted": configuration.encrypt(tokens["refresh_token"]), "expires_in": tokens.get("expires_in"), "connected_at": connected_at, "updated_at": connected_at}},
+        upsert=True,
+    )
+    await db.integration_oauth_states.update_one({"_id": oauth_state["_id"]}, {"$set": {"consumed_at": connected_at}})
+    return HTMLResponse("<h1>Bling conectado com sucesso</h1><p>Você pode fechar esta janela e voltar ao Proposta Já.</p>")
 
 
 # ---------- Register router + middleware ----------
