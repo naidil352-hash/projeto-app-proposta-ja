@@ -76,13 +76,17 @@ class BlingOAuthConfiguration:
                 headers={"Authorization": f"Basic {credentials}", "Content-Type": "application/x-www-form-urlencoded", "Accept": "1.0", "enable-jwt": "1"},
                 data=body,
                 timeout=15,
+                allow_redirects=False,
             )
         except requests.RequestException as exc:
             raise BlingOAuthError("Bling authorization service is unavailable") from exc
-        if not response.ok:
+        if not 200 <= response.status_code < 300:
             raise BlingOAuthError("Bling rejected the authorization code")
-        payload = response.json()
-        if not payload.get("access_token") or not payload.get("refresh_token"):
+        try:
+            payload = response.json()
+        except ValueError as exc:
+            raise BlingOAuthError("Bling returned an invalid token response") from exc
+        if not isinstance(payload, dict) or not payload.get("access_token") or not payload.get("refresh_token"):
             raise BlingOAuthError("Bling returned an incomplete token response")
         return payload
 
@@ -93,12 +97,16 @@ class BlingOAuthConfiguration:
                 headers={"Authorization": f"Bearer {access_token}", "Accept": "application/json", "enable-jwt": "1"},
                 params=params,
                 timeout=15,
+                allow_redirects=False,
             )
         except requests.RequestException as exc:
             raise BlingOAuthError("Bling service is unavailable") from exc
-        if not response.ok:
+        if not 200 <= response.status_code < 300:
             raise BlingApiError(response.status_code)
-        payload = response.json()
+        try:
+            payload = response.json()
+        except ValueError as exc:
+            raise BlingOAuthError("Bling returned an invalid response") from exc
         if not isinstance(payload, dict):
             raise BlingOAuthError("Bling returned an invalid response")
         return payload

@@ -3,6 +3,8 @@ import pytest
 
 from bling_oauth import AUTHORIZE_URL, BlingOAuthConfiguration, BlingOAuthError
 
+pytestmark = pytest.mark.unit
+
 
 def configured():
     return {
