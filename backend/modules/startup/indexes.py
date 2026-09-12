@@ -84,6 +84,8 @@ INDEX_SPECS: tuple[tuple[str, Any, dict[str, Any]], ...] = (
     ("integration_oauth_states", "state_hash", {"unique": True}),
     ("integration_oauth_states", [("expires_at", 1)], {}),
     ("integration_credentials", [("company_id", 1), ("provider", 1)], {"unique": True}),
+    ("bling_proposal_imports", [("company_id", 1), ("external_id", 1)], {"unique": True}),
+    ("proposals", [("company_id", 1), ("source.provider", 1), ("source.external_id", 1)], {"unique": True, "partialFilterExpression": {"source.provider": "bling", "source.external_id": {"$exists": True}}}),
     ("users", "verification_token", {"sparse": True}),
     ("users", "reset_token", {"sparse": True}),
     ("users", "session_id", {"sparse": True}),

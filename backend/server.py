@@ -76,7 +76,8 @@ from modules.startup.indexes import ensure_indexes
 from modules.integration_hub.adapters import create_default_registry
 from modules.integration_hub.router import create_integration_hub_router
 from bling_oauth import BlingOAuthConfiguration, BlingOAuthError
-from bling_preview import read_preview, fetch_detail
+from bling_preview import read_preview, fetch_detail, external_id
+from bling_import import BlingImportValidationError, build_proposal_input
 from whatsapp_integration import (
     WhatsAppConfiguration,
     WhatsAppProviderError,
@@ -2127,8 +2128,7 @@ def _proposal_total(products: List[dict], discount: float = 0.0) -> float:
     return round(max(subtotal - (discount or 0), 0), 2)
 
 
-@api_router.post("/proposals")
-async def create_proposal(data: ProposalIn, user=Depends(get_current_user)):
+async def _create_proposal(data: ProposalIn, user: dict, source: dict | None = None):
     await verify_trial_not_expired(user["company_id"], user["id"])
 
 
@@ -2277,6 +2277,9 @@ async def create_proposal(data: ProposalIn, user=Depends(get_current_user)):
             }
         ]
     }
+    if source:
+        # Only trusted server-side flows can attach an external identity.
+        doc["source"] = source
     await db.proposals.insert_one(doc)
     doc.pop("_id", None)
     
@@ -2292,6 +2295,11 @@ async def create_proposal(data: ProposalIn, user=Depends(get_current_user)):
     )
     
     return normalize_proposal(doc)
+
+
+@api_router.post("/proposals")
+async def create_proposal(data: ProposalIn, user=Depends(get_current_user)):
+    return await _create_proposal(data, user)
 
 
 @api_router.get("/proposals")
@@ -7780,6 +7788,136 @@ async def preview_bling_commercial_proposal_detail(proposal_id: str, user: dict 
         return await fetch_detail(read, proposal_id)
     except BlingOAuthError as exc:
         raise HTTPException(status_code=503, detail="Bling integration is not configured") from exc
+
+
+@api_router.post("/integrations/bling/commercial-proposals/import")
+async def import_bling_commercial_proposals(request: Request, user: dict = Depends(get_current_user)):
+    """Materialize explicitly confirmed, freshly-read Bling proposals locally.
+
+    This endpoint never writes to Bling.  It re-reads the selected provider
+    records instead of trusting browser data and reserves each external ID in
+    the tenant before materializing a Proposal Já proposal.
+    """
+    body = await request.json()
+    if body.get("confirmed") is not True:
+        raise HTTPException(status_code=422, detail="Confirme a importação antes de continuar")
+    raw_ids = body.get("proposal_ids")
+    if not isinstance(raw_ids, list) or not raw_ids:
+        raise HTTPException(status_code=422, detail="Selecione ao menos uma proposta para importar")
+    if len(raw_ids) > 25:
+        raise HTTPException(status_code=422, detail="Importe no máximo 25 propostas por vez")
+
+    proposal_ids: list[str] = []
+    for value in raw_ids:
+        proposal_id = external_id(value)
+        if proposal_id not in proposal_ids:
+            proposal_ids.append(proposal_id)
+    company_id = _safe_company_id(user)
+
+    async def read(path: str):
+        return await _bling_read(company_id, path)
+
+    results = []
+    for proposal_id in proposal_ids:
+        now = datetime.now(timezone.utc).isoformat()
+        reservation = {
+            "id": str(uuid.uuid4()),
+            "company_id": company_id,
+            "provider": "bling",
+            "external_id": proposal_id,
+            "status": "RUNNING",
+            "requested_by": user["id"],
+            "requested_at": now,
+            "updated_at": now,
+        }
+        try:
+            await db.bling_proposal_imports.insert_one(reservation)
+        except DuplicateKeyError:
+            previous = await db.bling_proposal_imports.find_one(
+                {"company_id": company_id, "external_id": proposal_id}, {"_id": 0}
+            )
+            if previous and previous.get("status") == "COMPLETED":
+                results.append({"external_id": proposal_id, "status": "ALREADY_IMPORTED", "proposal_id": previous.get("proposal_id")})
+                continue
+            if previous and previous.get("status") == "FAILED":
+                retry = await db.bling_proposal_imports.update_one(
+                    {"id": previous["id"], "company_id": company_id, "status": "FAILED"},
+                    {"$set": {"status": "RUNNING", "requested_by": user["id"], "requested_at": now, "updated_at": now}, "$unset": {"error": ""}},
+                )
+                if retry.modified_count:
+                    reservation["id"] = previous["id"]
+                else:
+                    results.append({"external_id": proposal_id, "status": "IN_PROGRESS", "message": "Esta proposta já está sendo importada"})
+                    continue
+            else:
+                results.append({"external_id": proposal_id, "status": "IN_PROGRESS", "message": "Esta proposta já está sendo importada"})
+                continue
+
+        try:
+            detail_response = await fetch_detail(read, proposal_id)
+            prepared = build_proposal_input(detail_response["proposal"])
+            proposal_input = ProposalIn(**{key: value for key, value in prepared.items() if key != "source"})
+            try:
+                proposal = await _create_proposal(proposal_input, user, source=prepared["source"])
+            except DuplicateKeyError:
+                proposal = await db.proposals.find_one(
+                    {"company_id": company_id, "source.provider": "bling", "source.external_id": proposal_id, "deleted": {"$ne": True}},
+                    {"_id": 0},
+                )
+                if not proposal:
+                    raise
+            completed_at = datetime.now(timezone.utc).isoformat()
+            completed = {
+                "status": "COMPLETED",
+                "proposal_id": proposal["id"],
+                "completed_at": completed_at,
+                "updated_at": completed_at,
+            }
+            await db.bling_proposal_imports.update_one(
+                {"id": reservation["id"], "company_id": company_id}, {"$set": completed}
+            )
+            await log_audit(
+                action="BLING_PROPOSAL_IMPORTED",
+                entity_type="proposal",
+                entity_id=proposal["id"],
+                old_value=None,
+                new_value={"source": prepared["source"], "import_id": reservation["id"]},
+                user_id=user["id"],
+                company_id=company_id,
+            )
+            results.append({"external_id": proposal_id, "status": "IMPORTED", "proposal_id": proposal["id"]})
+        except BlingImportValidationError as exc:
+            message = str(exc)
+            await db.bling_proposal_imports.update_one(
+                {"id": reservation["id"], "company_id": company_id},
+                {"$set": {"status": "FAILED", "error": message, "updated_at": datetime.now(timezone.utc).isoformat()}},
+            )
+            results.append({"external_id": proposal_id, "status": "BLOCKED", "message": message})
+        except HTTPException as exc:
+            message = str(exc.detail)
+            await db.bling_proposal_imports.update_one(
+                {"id": reservation["id"], "company_id": company_id},
+                {"$set": {"status": "FAILED", "error": message, "updated_at": datetime.now(timezone.utc).isoformat()}},
+            )
+            results.append({"external_id": proposal_id, "status": "FAILED", "message": message})
+        except Exception:
+            logger.exception("Bling proposal import failed")
+            message = "Não foi possível importar esta proposta. Tente novamente."
+            await db.bling_proposal_imports.update_one(
+                {"id": reservation["id"], "company_id": company_id},
+                {"$set": {"status": "FAILED", "error": message, "updated_at": datetime.now(timezone.utc).isoformat()}},
+            )
+            results.append({"external_id": proposal_id, "status": "FAILED", "message": message})
+
+    imported = sum(result["status"] == "IMPORTED" for result in results)
+    already_imported = sum(result["status"] == "ALREADY_IMPORTED" for result in results)
+    return {
+        "requested": len(proposal_ids),
+        "imported": imported,
+        "already_imported": already_imported,
+        "results": results,
+        "provider_write": False,
+    }
 
 
 @api_router.get("/integrations/bling/callback", response_class=HTMLResponse)

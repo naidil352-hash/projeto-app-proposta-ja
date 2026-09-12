@@ -1,5 +1,5 @@
 import React, { useCallback, useRef, useState } from "react";
-import { ActivityIndicator, Linking, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
+import { ActivityIndicator, Linking, Modal, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useFocusEffect } from "expo-router";
 
@@ -21,6 +21,9 @@ export default function BlingIntegrationScreen() {
   const [selected, setSelected] = useState<string[]>([]);
   const [details, setDetails] = useState<Record<string, DetailState>>({});
   const [fetching, setFetching] = useState(false);
+  const [importing, setImporting] = useState(false);
+  const [confirmingImport, setConfirmingImport] = useState(false);
+  const [importSummary, setImportSummary] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const generation = useRef(0);
   const busy = useRef(false);
@@ -28,7 +31,7 @@ export default function BlingIntegrationScreen() {
   const load = useCallback(async () => {
     const current = ++generation.current;
     busy.current = false;
-    setFetching(false); setPreviewing(false); setProposals(null); setSelected([]); setDetails({});
+    setFetching(false); setPreviewing(false); setImporting(false); setConfirmingImport(false); setImportSummary(null); setProposals(null); setSelected([]); setDetails({});
     try {
       setLoading(true); setError(null);
       const response = await api.get("/integrations/bling/status");
@@ -78,9 +81,22 @@ export default function BlingIntegrationScreen() {
     } finally { if (current === generation.current) { setFetching(false); busy.current = false; } }
   };
 
+  const importableIds = selected.filter((id) => Boolean(details[id]?.data));
+  const confirmImport = async () => {
+    if (busy.current || importableIds.length === 0) return;
+    busy.current = true; setImporting(true); setError(null);
+    try {
+      const response = await api.post("/integrations/bling/commercial-proposals/import", { proposal_ids: importableIds, confirmed: true });
+      const data = response.data;
+      const blocked = (data.results || []).filter((result: { status: string }) => result.status === "BLOCKED" || result.status === "FAILED").length;
+      setImportSummary(`${data.imported || 0} proposta(s) importada(s)${data.already_imported ? ` · ${data.already_imported} já estava(m) importada(s)` : ""}${blocked ? ` · ${blocked} não foi(ram) importada(s)` : ""}. Nenhum dado foi alterado no Bling.`);
+    } catch (requestError) { setError(formatApiError(requestError)); }
+    finally { setImporting(false); setConfirmingImport(false); busy.current = false; }
+  };
+
   return <SafeAreaView style={styles.root} edges={["top"]}><ScrollView contentContainerStyle={styles.content}>
     <Text style={styles.eyebrow}>INTEGRAÇÕES</Text><Text style={styles.title}>Bling</Text>
-    <Text style={styles.subtitle}>Prévia de leitura. Consulte propostas comerciais e seus detalhes. Nenhum dado é importado, nenhuma proposta ou pedido é criado e nenhum webhook é ativado.</Text>
+    <Text style={styles.subtitle}>Consulte propostas comerciais e seus detalhes. A importação só ocorre após sua confirmação explícita e nunca cria ou altera pedidos no Bling.</Text>
     {loading ? <ActivityIndicator color={theme.colors.primary} /> : <View style={styles.card}>
       <Text style={styles.status}>{status?.connected ? "CONECTADO · SOMENTE LEITURA" : status?.configured ? "PRONTO PARA CONECTAR" : "CONFIGURAÇÃO PENDENTE"}</Text>
       {status?.connected && <Text style={styles.muted}>Conta autorizada em {new Date(status.connected_at || "").toLocaleString("pt-BR")}</Text>}
@@ -95,6 +111,9 @@ export default function BlingIntegrationScreen() {
         <Pressable accessibilityRole="button" style={[styles.button, (fetching || selected.length === 0) && styles.disabled]} disabled={fetching || selected.length === 0} onPress={fetchSelected}>
           <Text style={styles.buttonText}>{fetching ? "Consultando detalhes..." : `Buscar detalhes (${selected.length})`}</Text>
         </Pressable>
+        {importableIds.length > 0 && <Pressable accessibilityRole="button" style={[styles.button, (fetching || importing) && styles.disabled]} disabled={fetching || importing} onPress={() => setConfirmingImport(true)}>
+          <Text style={styles.buttonText}>Importar selecionadas ({importableIds.length})</Text>
+        </Pressable>}
         {proposals.map((proposal) => {
           const checked = selected.includes(proposal.external_id);
           const detail = details[proposal.external_id];
@@ -125,8 +144,20 @@ export default function BlingIntegrationScreen() {
         })}
       </>}
     </View>}
+    {importSummary && <Text accessibilityLiveRegion="polite" style={styles.success}>{importSummary}</Text>}
     {error && <Text accessibilityRole="alert" style={styles.error}>{error}</Text>}
+    <Modal visible={confirmingImport} transparent animationType="fade" onRequestClose={() => !importing && setConfirmingImport(false)}>
+      <View style={styles.modalBackdrop}><View style={styles.modalCard}>
+        <Text style={styles.previewTitle}>Confirmar importação</Text>
+        <Text style={styles.muted}>Serão criadas {importableIds.length} proposta(s) no Proposta Já com os detalhes conferidos agora. Propostas já importadas não serão duplicadas.</Text>
+        <Text style={styles.muted}>Esta ação não cria pedido, não envia alteração e não grava dados no Bling.</Text>
+        <View style={styles.modalActions}>
+          <Pressable accessibilityRole="button" style={styles.secondaryButton} disabled={importing} onPress={() => setConfirmingImport(false)}><Text style={styles.secondaryButtonText}>Cancelar</Text></Pressable>
+          <Pressable accessibilityRole="button" style={[styles.button, importing && styles.disabled]} disabled={importing} onPress={confirmImport}>{importing ? <ActivityIndicator color="#fff" /> : <Text style={styles.buttonText}>Confirmar importação</Text>}</Pressable>
+        </View>
+      </View></View>
+    </Modal>
   </ScrollView></SafeAreaView>;
 }
 
-const styles = StyleSheet.create({ root: { flex: 1, backgroundColor: theme.colors.bg }, content: { width: "100%", maxWidth: 720, alignSelf: "center", padding: 24, gap: 14 }, eyebrow: { color: theme.colors.primary, fontWeight: "800", fontSize: 12, letterSpacing: 1 }, title: { color: theme.colors.text, fontSize: 30, fontWeight: "800" }, subtitle: { color: theme.colors.textMuted, lineHeight: 21 }, card: { backgroundColor: "#fff", borderRadius: 12, borderWidth: 1, borderColor: theme.colors.border, padding: 20, gap: 14 }, status: { color: theme.colors.primary, fontWeight: "900" }, muted: { color: theme.colors.textMuted }, button: { alignSelf: "flex-start", backgroundColor: theme.colors.primary, borderRadius: 8, paddingVertical: 12, paddingHorizontal: 16, minWidth: 155, alignItems: "center" }, buttonText: { color: "#fff", fontWeight: "800" }, disabled: { opacity: 0.45 }, error: { color: "#B42318", backgroundColor: "#FEE4E2", padding: 12, borderRadius: 8 }, preview: { backgroundColor: "#fff", borderRadius: 12, borderWidth: 1, borderColor: theme.colors.border, padding: 20, gap: 12 }, previewTitle: { color: theme.colors.text, fontSize: 18, fontWeight: "800" }, proposal: { borderTopWidth: 1, borderColor: theme.colors.border, paddingTop: 12, gap: 8 }, proposalName: { color: theme.colors.text, fontWeight: "800" }, proposalTotal: { color: theme.colors.text, fontWeight: "800", textAlign: "right" }, selection: { paddingVertical: 8, gap: 6 }, detail: { gap: 12, paddingVertical: 12 } });
+const styles = StyleSheet.create({ root: { flex: 1, backgroundColor: theme.colors.bg }, content: { width: "100%", maxWidth: 720, alignSelf: "center", padding: 24, gap: 14 }, eyebrow: { color: theme.colors.primary, fontWeight: "800", fontSize: 12, letterSpacing: 1 }, title: { color: theme.colors.text, fontSize: 30, fontWeight: "800" }, subtitle: { color: theme.colors.textMuted, lineHeight: 21 }, card: { backgroundColor: "#fff", borderRadius: 12, borderWidth: 1, borderColor: theme.colors.border, padding: 20, gap: 14 }, status: { color: theme.colors.primary, fontWeight: "900" }, muted: { color: theme.colors.textMuted }, button: { alignSelf: "flex-start", backgroundColor: theme.colors.primary, borderRadius: 8, paddingVertical: 12, paddingHorizontal: 16, minWidth: 155, alignItems: "center" }, buttonText: { color: "#fff", fontWeight: "800" }, secondaryButton: { borderRadius: 8, borderWidth: 1, borderColor: theme.colors.primary, paddingVertical: 12, paddingHorizontal: 16, alignItems: "center" }, secondaryButtonText: { color: theme.colors.primary, fontWeight: "800" }, disabled: { opacity: 0.45 }, error: { color: "#B42318", backgroundColor: "#FEE4E2", padding: 12, borderRadius: 8 }, success: { color: "#067647", backgroundColor: "#ECFDF3", padding: 12, borderRadius: 8 }, preview: { backgroundColor: "#fff", borderRadius: 12, borderWidth: 1, borderColor: theme.colors.border, padding: 20, gap: 12 }, previewTitle: { color: theme.colors.text, fontSize: 18, fontWeight: "800" }, proposal: { borderTopWidth: 1, borderColor: theme.colors.border, paddingTop: 12, gap: 8 }, proposalName: { color: theme.colors.text, fontWeight: "800" }, proposalTotal: { color: theme.colors.text, fontWeight: "800", textAlign: "right" }, selection: { paddingVertical: 8, gap: 6 }, detail: { gap: 12, paddingVertical: 12 }, modalBackdrop: { flex: 1, justifyContent: "center", padding: 24, backgroundColor: "rgba(15, 23, 42, 0.52)" }, modalCard: { backgroundColor: "#fff", borderRadius: 12, padding: 24, gap: 14, maxWidth: 560, width: "100%", alignSelf: "center" }, modalActions: { flexDirection: "row", justifyContent: "flex-end", gap: 12, alignItems: "center", flexWrap: "wrap" } });
