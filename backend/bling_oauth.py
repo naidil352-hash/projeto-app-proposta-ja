@@ -43,10 +43,31 @@ def _provider_error_message(response: requests.Response) -> str:
         candidates.extend([error.get("message"), error.get("detail"), error.get("description")])
     elif isinstance(error, str):
         candidates.append(error)
+
+    # Bling may put the useful validation information in an ``errors`` list
+    # while leaving the top-level message generic (for example, "Não foi
+    # possível salvar a venda").  Read only field/code/text values from that
+    # shape: never echo an arbitrary provider response back to the browser.
+    details: list[str] = []
+    errors = payload.get("errors")
+    if isinstance(errors, list):
+        for item in errors[:8]:
+            if isinstance(item, str) and item.strip():
+                details.append(item.strip())
+                continue
+            if not isinstance(item, dict):
+                continue
+            field = item.get("field") or item.get("campo")
+            text = item.get("message") or item.get("detail") or item.get("description")
+            code = item.get("code") or item.get("codigo")
+            parts = [str(value).strip() for value in (field, text, code) if isinstance(value, (str, int)) and str(value).strip()]
+            if parts:
+                details.append(": ".join(parts))
     for candidate in candidates:
         if isinstance(candidate, str) and candidate.strip():
-            return candidate.strip()[:500]
-    return ""
+            base = candidate.strip()
+            return (base + (" — " + "; ".join(details) if details else ""))[:500]
+    return "; ".join(details)[:500]
 
 
 @dataclass(frozen=True)

@@ -1,7 +1,7 @@
 from cryptography.fernet import Fernet
 import pytest
 
-from bling_oauth import AUTHORIZE_URL, BlingOAuthConfiguration, BlingOAuthError
+from bling_oauth import AUTHORIZE_URL, BlingOAuthConfiguration, BlingOAuthError, _provider_error_message
 
 pytestmark = pytest.mark.unit
 
@@ -36,3 +36,20 @@ def test_configuration_fails_closed_when_key_is_missing():
     env.pop("BLING_TOKEN_ENCRYPTION_KEY")
     with pytest.raises(BlingOAuthError, match="BLING_TOKEN_ENCRYPTION_KEY"):
         BlingOAuthConfiguration.from_environment(env)
+
+
+def test_provider_error_message_includes_only_safe_validation_details():
+    class Response:
+        def json(self):
+            return {
+                "message": "Não foi possível salvar a venda",
+                "errors": [
+                    {"field": "data", "message": "deve ser informada", "code": "VALIDATION_ERROR"},
+                    {"token": "must-not-leak"},
+                ],
+            }
+
+    message = _provider_error_message(Response())
+
+    assert message == "Não foi possível salvar a venda — data: deve ser informada: VALIDATION_ERROR"
+    assert "must-not-leak" not in message
