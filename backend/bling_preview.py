@@ -115,6 +115,8 @@ async def write_sales_order(credentials, configuration, company_id, payload):
         return await post(tokens["access_token"])
     except BlingApiError as exc:
         messages = {401: "Reconecte sua conta Bling", 403: "O aplicativo Bling não possui permissão para criar pedidos", 404: "Registro não encontrado no Bling", 429: "Limite do Bling atingido. Tente novamente em instantes."}
+        if exc.status_code in {400, 422}:
+            raise HTTPException(422, f"O Bling recusou os dados do pedido: {exc}") from exc
         raise HTTPException(exc.status_code if exc.status_code in messages else 502, messages.get(exc.status_code, "Não foi possível criar o pedido no Bling")) from exc
 
 

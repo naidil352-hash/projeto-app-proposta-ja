@@ -29,6 +29,26 @@ class BlingApiError(BlingOAuthError):
         super().__init__(message)
 
 
+def _provider_error_message(response: requests.Response) -> str:
+    """Return a short, credential-free validation message from Bling."""
+    try:
+        payload = response.json()
+    except ValueError:
+        return ""
+    if not isinstance(payload, dict):
+        return ""
+    candidates = [payload.get("message"), payload.get("detail"), payload.get("description")]
+    error = payload.get("error")
+    if isinstance(error, dict):
+        candidates.extend([error.get("message"), error.get("detail"), error.get("description")])
+    elif isinstance(error, str):
+        candidates.append(error)
+    for candidate in candidates:
+        if isinstance(candidate, str) and candidate.strip():
+            return candidate.strip()[:500]
+    return ""
+
+
 @dataclass(frozen=True)
 class BlingOAuthConfiguration:
     client_id: str
@@ -110,7 +130,8 @@ class BlingOAuthConfiguration:
         except requests.RequestException as exc:
             raise BlingOAuthError("Bling service is unavailable") from exc
         if not 200 <= response.status_code < 300:
-            raise BlingApiError(response.status_code)
+            message = _provider_error_message(response) or f"Bling respondeu HTTP {response.status_code}"
+            raise BlingApiError(response.status_code, message)
         try:
             payload = response.json()
         except ValueError as exc:
