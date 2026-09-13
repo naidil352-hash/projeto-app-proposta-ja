@@ -4,6 +4,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from datetime import date
 from decimal import Decimal, InvalidOperation
 
 from fastapi import HTTPException
@@ -103,11 +104,15 @@ async def build_sales_order_plan(proposal: dict, read) -> dict:
         raise BlingOrderValidationError("O total da proposta não confere com itens e desconto; revise a proposta antes de gerar o pedido")
 
     notes = f"Criado pelo Proposta Já a partir da proposta {proposal.get('id')}."
-    order_payload = {"contato": {"id": contact["id"]}, "itens": payload_items, "observacoes": notes}
+    order_payload = {
+        "data": date.today().isoformat(),
+        "contato": {"id": contact["id"]},
+        "itens": payload_items,
+        "observacoes": notes,
+    }
     if discount:
         order_payload["desconto"] = {"valor": discount, "unidade": "REAL"}
     plan = {"proposal_id": str(proposal["id"]), "client": {"name": proposal.get("client_name"), "document": document, "bling_contact": contact},
             "items": planned_items, "subtotal": subtotal, "discount": discount, "total": total, "order_payload": order_payload}
     plan["fingerprint"] = _fingerprint(plan)
     return plan
-

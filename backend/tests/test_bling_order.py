@@ -1,4 +1,5 @@
 from unittest.mock import AsyncMock
+from datetime import date
 
 import pytest
 
@@ -24,6 +25,7 @@ async def test_plan_matches_document_and_code_exactly_and_never_writes():
     assert plan["client"]["bling_contact"]["id"] == 9
     assert plan["items"][0]["bling_product"]["id"] == 7
     assert plan["order_payload"] == {
+        "data": date.today().isoformat(),
         "contato": {"id": 9},
         "itens": [{"quantidade": 2.0, "valor": 10.0, "codigo": "SKU-1", "unidade": "UN", "produto": {"id": 7}}],
         "observacoes": "Criado pelo Proposta Já a partir da proposta proposal-1.",
@@ -52,4 +54,3 @@ async def test_plan_rejects_non_unique_contact_or_product_matches():
     ]})
     with pytest.raises(BlingOrderValidationError, match="Cliente não encontrado"):
         await build_sales_order_plan(proposal(), read)
-
