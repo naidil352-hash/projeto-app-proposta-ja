@@ -143,6 +143,7 @@ export default function ProposalDetail() {
   const [blingPlan, setBlingPlan] = useState<any>(null);
   const [blingPlanOpen, setBlingPlanOpen] = useState(false);
   const [blingPlanLoading, setBlingPlanLoading] = useState(false);
+  const [blingRecoveryNeeded, setBlingRecoveryNeeded] = useState(false);
 
   const safeBack = () => {
     try {
@@ -282,6 +283,7 @@ export default function ProposalDetail() {
       setBlingPlanLoading(true);
       const { data } = await api.get(`/integrations/bling/proposals/${id}/sales-order-plan`);
       setBlingPlan(data.plan);
+      setBlingRecoveryNeeded(false);
       setBlingPlanOpen(true);
     } catch (e) {
       Alert.alert("Pedido no Bling", formatApiError(e));
@@ -308,14 +310,7 @@ export default function ProposalDetail() {
     } catch (e) {
       const message = formatApiError(e);
       if (message.includes("já está em andamento ou precisa ser conferida no Bling")) {
-        Alert.alert(
-          "Conferência necessária",
-          "O Proposta Já encontrou uma tentativa anterior sem resultado confirmado. Depois de verificar que não existe pedido no Bling, confirme abaixo para liberar uma nova prévia. Nenhum pedido será criado nesta etapa.",
-          [
-            { text: "Cancelar", style: "cancel" },
-            { text: "Confirmar ausência no Bling", onPress: () => { void onReconcileBlingOrder(); } },
-          ],
-        );
+        setBlingRecoveryNeeded(true);
       } else {
         Alert.alert("Pedido no Bling", message);
       }
@@ -330,6 +325,7 @@ export default function ProposalDetail() {
       await api.post(`/integrations/bling/proposals/${id}/sales-order/reconcile`, {
         confirmed_absent_in_bling: true,
       });
+      setBlingRecoveryNeeded(false);
       setBlingPlanOpen(false);
       Alert.alert("Nova tentativa liberada", "A ausência do pedido no Bling foi registrada. Abra uma nova prévia e revise tudo antes de criar o pedido.");
     } catch (e) {
@@ -1409,6 +1405,10 @@ ${p.seller_name || ""}`;
                 {blingPlan?.discount ? <Text style={{ color: theme.colors.textSec }}>Desconto: {formatCurrency(blingPlan.discount)}</Text> : null}
                 <Text style={{ fontWeight: "800", fontSize: 16, color: theme.colors.text }}>Total: {formatCurrency(blingPlan?.total || 0)}</Text>
               </View>
+              {blingRecoveryNeeded && <View style={{ backgroundColor: "#FFF7ED", borderRadius: 8, padding: 12, gap: 4, marginTop: 12 }}>
+                <Text style={{ fontWeight: "800", color: "#9A3412" }}>Conferência necessária</Text>
+                <Text style={{ color: theme.colors.text }}>Você já verificou que não existe pedido no Bling. Confirme essa ausência para liberar uma nova prévia. Esta ação não cria pedido.</Text>
+              </View>}
               <View style={{ flexDirection: "row", gap: 8, marginTop: 16 }}>
                 <TouchableOpacity style={s.modalCancel} onPress={() => setBlingPlanOpen(false)} disabled={busy}>
                   <Text style={{ color: theme.colors.text, fontWeight: "700" }}>Cancelar</Text>
@@ -1417,9 +1417,9 @@ ${p.seller_name || ""}`;
                   testID="confirm-bling-sales-order"
                   style={[s.modalConfirm, { backgroundColor: "#0F766E" }, busy && { opacity: 0.5 }]}
                   disabled={busy}
-                  onPress={onConfirmBlingOrder}
+                  onPress={blingRecoveryNeeded ? onReconcileBlingOrder : onConfirmBlingOrder}
                 >
-                  {busy ? <ActivityIndicator color="#fff" /> : <Text style={{ color: "#fff", fontWeight: "700" }}>Criar pedido</Text>}
+                  {busy ? <ActivityIndicator color="#fff" /> : <Text style={{ color: "#fff", fontWeight: "700" }}>{blingRecoveryNeeded ? "Confirmar ausência no Bling" : "Criar pedido"}</Text>}
                 </TouchableOpacity>
               </View>
             </View>
