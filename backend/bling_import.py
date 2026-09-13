@@ -47,6 +47,7 @@ def build_proposal_input(detail: dict) -> dict:
         subtotal += quantity * unit_price
         products.append({
             "name": name,
+            "code": str(item.get("code") or "").strip(),
             "description": "",
             "quantity": quantity,
             "unit_price": unit_price,

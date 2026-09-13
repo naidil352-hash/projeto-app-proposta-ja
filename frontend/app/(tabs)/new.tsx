@@ -134,6 +134,7 @@ export default function NewProposal() {
 
   const [itemType, setItemType] = useState<"catalog" | "manual">("catalog");
   const [manualName, setManualName] = useState("");
+  const [manualCode, setManualCode] = useState("");
   const [manualDesc, setManualDesc] = useState("");
   const [manualUnit, setManualUnit] = useState("UN");
   const [manualPrice, setManualPrice] = useState("");
@@ -168,6 +169,7 @@ export default function NewProposal() {
     setShowDropdown(false);
     setItemType("catalog");
     setManualName("");
+    setManualCode("");
     setManualDesc("");
     setManualUnit("UN");
     setManualPrice("");
@@ -399,6 +401,7 @@ export default function NewProposal() {
         {
           id: crypto.randomUUID(),
           name: manualName.trim(),
+          code: manualCode.trim(),
           description: manualDesc.trim(),
           unit: manualUnit.trim() || "UN",
           quantity: String(qty),
@@ -407,6 +410,7 @@ export default function NewProposal() {
       ]);
 
       setManualName("");
+      setManualCode("");
       setManualDesc("");
       setManualUnit("UN");
       setManualPrice("");
@@ -521,6 +525,13 @@ export default function NewProposal() {
                 placeholder="Ex: Serpentina FCU 12TR"
               />
               <Input
+                label="Código no Bling"
+                value={manualCode}
+                onChangeText={setManualCode}
+                placeholder="Obrigatório apenas para gerar pedido no Bling"
+                autoCapitalize="characters"
+              />
+              <Input
                 label="Descrição"
                 value={manualDesc}
                 onChangeText={setManualDesc}
@@ -571,6 +582,7 @@ export default function NewProposal() {
             <View key={p.id} style={s.itemEditor}>
               {p.product_id ? <Text style={s.catalogLinkNotice}>Vinculado ao catálogo: {p.code || p.product_id}</Text> : null}
               <TextInput style={s.itemEditorInput} value={editingItem.name} onChangeText={(name) => setEditingItem((current) => current ? { ...current, name } : current)} placeholder="Nome" />
+              {!p.product_id ? <TextInput style={s.itemEditorInput} value={editingItem.code || ""} onChangeText={(code) => setEditingItem((current) => current ? { ...current, code } : current)} placeholder="Código no Bling" autoCapitalize="characters" /> : null}
               <TextInput style={[s.itemEditorInput, s.itemEditorDescription]} value={editingItem.description || ""} onChangeText={(description) => setEditingItem((current) => current ? { ...current, description } : current)} placeholder="Descrição" multiline />
               <View style={s.itemEditorFields}>
                 <TextInput style={[s.itemEditorInput, s.itemEditorField]} value={editingItem.quantity} onChangeText={(quantity) => setEditingItem((current) => current ? { ...current, quantity: quantity.replace(/[^0-9,.]/g, "") } : current)} placeholder="Quantidade" keyboardType="decimal-pad" />
@@ -701,6 +713,7 @@ export default function NewProposal() {
       } else {
         return {
           name: p.name,
+          code: p.code || "",
           description: p.description || "",
           unit: p.unit || "UN",
           unit_price: parseCurrency(p.price),

@@ -91,11 +91,19 @@ class BlingOAuthConfiguration:
         return payload
 
     def get_json(self, path: str, access_token: str, params: dict[str, str | int] | None = None) -> dict:
+        return self._json_request("GET", path, access_token, params=params)
+
+    def post_json(self, path: str, access_token: str, body: dict) -> dict:
+        return self._json_request("POST", path, access_token, body=body)
+
+    def _json_request(self, method: str, path: str, access_token: str, *, params: dict[str, str | int] | None = None, body: dict | None = None) -> dict:
         try:
-            response = requests.get(
+            response = requests.request(
+                method,
                 "https://api.bling.com.br/Api/v3" + path,
-                headers={"Authorization": f"Bearer {access_token}", "Accept": "application/json", "enable-jwt": "1"},
+                headers={"Authorization": f"Bearer {access_token}", "Accept": "application/json", "Content-Type": "application/json", "enable-jwt": "1"},
                 params=params,
+                json=body,
                 timeout=15,
                 allow_redirects=False,
             )

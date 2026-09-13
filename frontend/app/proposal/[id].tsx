@@ -140,6 +140,9 @@ export default function ProposalDetail() {
   const [interactionNextDate, setInteractionNextDate] = useState("");
   const [interactionNextDesc, setInteractionNextDesc] = useState("");
   const [interactionTemp, setInteractionTemp] = useState("morna");
+  const [blingPlan, setBlingPlan] = useState<any>(null);
+  const [blingPlanOpen, setBlingPlanOpen] = useState(false);
+  const [blingPlanLoading, setBlingPlanLoading] = useState(false);
 
   const safeBack = () => {
     try {
@@ -269,6 +272,41 @@ export default function ProposalDetail() {
         e.message ||
           "Falha ao imprimir"
       );
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const onPreviewBlingOrder = async () => {
+    try {
+      setBlingPlanLoading(true);
+      const { data } = await api.get(`/integrations/bling/proposals/${id}/sales-order-plan`);
+      setBlingPlan(data.plan);
+      setBlingPlanOpen(true);
+    } catch (e) {
+      Alert.alert("Pedido no Bling", formatApiError(e));
+    } finally {
+      setBlingPlanLoading(false);
+    }
+  };
+
+  const onConfirmBlingOrder = async () => {
+    if (!blingPlan?.fingerprint) return;
+    try {
+      setBusy(true);
+      const { data } = await api.post(`/integrations/bling/proposals/${id}/sales-order`, {
+        confirmed: true,
+        fingerprint: blingPlan.fingerprint,
+      });
+      setBlingPlanOpen(false);
+      if (data.status === "ALREADY_CREATED") {
+        Alert.alert("Pedido já criado", `Este pedido já está registrado no Bling (ID ${data.order_id}).`);
+      } else {
+        Alert.alert("Pedido criado", `Pedido criado no Bling com ID ${data.order_id}.`);
+      }
+      await load();
+    } catch (e) {
+      Alert.alert("Pedido no Bling", formatApiError(e));
     } finally {
       setBusy(false);
     }
@@ -1106,6 +1144,16 @@ ${p.seller_name || ""}`;
               onDuplicate
             }
           />
+
+          {(p.status === "aprovado" || p.acceptance_status === "accepted") && (
+            <ActionBtn
+              testID="act-bling-sales-order"
+              icon="cart-outline"
+              label={blingPlanLoading ? "Consultando Bling..." : "Gerar pedido no Bling"}
+              color="#0F766E"
+              onPress={onPreviewBlingOrder}
+            />
+          )}
         </View>
 
         {["aberto", "qualificado", "negociacao"].includes(p.status) && (
@@ -1300,6 +1348,55 @@ ${p.seller_name || ""}`;
               </TouchableOpacity>
             </View>
           </View>
+        </KeyboardAvoidingView>
+      </Modal>
+
+      <Modal
+        visible={blingPlanOpen}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setBlingPlanOpen(false)}
+      >
+        <KeyboardAvoidingView style={s.modalRoot} behavior={Platform.OS === "ios" ? "padding" : undefined}>
+          <ScrollView contentContainerStyle={{ flexGrow: 1, justifyContent: "center" }}>
+            <View style={s.modalCard} testID="bling-sales-order-plan-modal">
+              <Text style={s.modalTitle}>Revisar pedido no Bling</Text>
+              <Text style={s.modalSub}>
+                A criação só ocorrerá após sua confirmação. Nenhum cliente ou produto será cadastrado automaticamente.
+              </Text>
+              <View style={{ backgroundColor: "#F0FDFA", borderRadius: 8, padding: 12, gap: 4, marginBottom: 12 }}>
+                <Text style={{ fontWeight: "800", color: "#115E59" }}>Cliente encontrado</Text>
+                <Text style={{ color: theme.colors.text }}>{blingPlan?.client?.bling_contact?.name || blingPlan?.client?.name}</Text>
+                <Text style={{ color: theme.colors.textSec }}>{blingPlan?.client?.document}</Text>
+              </View>
+              <Text style={{ fontWeight: "800", color: theme.colors.text, marginBottom: 8 }}>Produtos encontrados por código</Text>
+              {(blingPlan?.items || []).map((item: any, index: number) => (
+                <View key={`${item.code}-${index}`} style={{ borderTopWidth: 1, borderTopColor: theme.colors.border, paddingVertical: 8, gap: 3 }}>
+                  <Text style={{ fontWeight: "700", color: theme.colors.text }}>{item.local_name || item.bling_product?.name}</Text>
+                  <Text style={{ color: theme.colors.textSec }}>{item.code} · {item.quantity} {item.unit} × {formatCurrency(item.unit_price)}</Text>
+                  <Text style={{ color: "#115E59", fontSize: 12 }}>Bling: {item.bling_product?.name}</Text>
+                </View>
+              ))}
+              <View style={{ borderTopWidth: 1, borderTopColor: theme.colors.border, marginTop: 8, paddingTop: 10, gap: 4 }}>
+                <Text style={{ color: theme.colors.textSec }}>Subtotal: {formatCurrency(blingPlan?.subtotal || 0)}</Text>
+                {blingPlan?.discount ? <Text style={{ color: theme.colors.textSec }}>Desconto: {formatCurrency(blingPlan.discount)}</Text> : null}
+                <Text style={{ fontWeight: "800", fontSize: 16, color: theme.colors.text }}>Total: {formatCurrency(blingPlan?.total || 0)}</Text>
+              </View>
+              <View style={{ flexDirection: "row", gap: 8, marginTop: 16 }}>
+                <TouchableOpacity style={s.modalCancel} onPress={() => setBlingPlanOpen(false)} disabled={busy}>
+                  <Text style={{ color: theme.colors.text, fontWeight: "700" }}>Cancelar</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  testID="confirm-bling-sales-order"
+                  style={[s.modalConfirm, { backgroundColor: "#0F766E" }, busy && { opacity: 0.5 }]}
+                  disabled={busy}
+                  onPress={onConfirmBlingOrder}
+                >
+                  {busy ? <ActivityIndicator color="#fff" /> : <Text style={{ color: "#fff", fontWeight: "700" }}>Criar pedido</Text>}
+                </TouchableOpacity>
+              </View>
+            </View>
+          </ScrollView>
         </KeyboardAvoidingView>
       </Modal>
 

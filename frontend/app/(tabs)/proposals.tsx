@@ -37,7 +37,7 @@ type Company = { company_name?: string; [k: string]: any };
 const FILTERS: { key: string; label: string }[] = [
   { key: "all", label: "Todos" },
   { key: "aberto", label: "Abertos" },
-  { key: "realizado", label: "Realizados" },
+  { key: "aprovado", label: "Realizados" },
   { key: "perdido", label: "Perdidos" },
 ];
 
@@ -160,7 +160,9 @@ export default function Proposals() {
   const searchTerm = search.trim().toLowerCase();
   const filteredItems = useMemo(() => {
     return items.filter((p) => {
-      const statusMatch = filter === "all" || p.status === filter;
+      const statusMatch = filter === "all"
+        || (filter === "aprovado" && ["aprovado", "realizado"].includes(p.status))
+        || p.status === filter;
       if (!statusMatch) return false;
       if (!searchTerm) return true;
       const seller = p.seller_name || "Vendedor Geral";
@@ -171,14 +173,17 @@ export default function Proposals() {
 
   const totals = useMemo(() => {
     const open = items.filter((p) => p.status === "aberto").length;
-    const won = items.filter((p) => p.status === "realizado").length;
+    const won = items.filter((p) => ["aprovado", "realizado"].includes(p.status)).length;
     const lost = items.filter((p) => p.status === "perdido").length;
-    const revenue = items.reduce((sum, p) => sum + p.total, 0);
-    return { open, won, lost, revenue };
+    const negotiationValue = items
+      .filter((p) => ["aberto", "qualificado", "negociacao"].includes(p.status))
+      .reduce((sum, p) => sum + p.total, 0);
+    const totalValue = items.reduce((sum, p) => sum + p.total, 0);
+    return { open, won, lost, negotiationValue, totalValue };
   }, [items]);
 
   const openSummary = totals.open === 1 ? "1 proposta aberta" : `${totals.open} propostas abertas`;
-  const negotiationSummary = `${formatCurrency(totals.revenue)} em negociação`;
+  const negotiationSummary = `${formatCurrency(totals.negotiationValue)} em negociação`;
 
   const renderMobile = () => (
     <ScrollView
@@ -274,7 +279,7 @@ export default function Proposals() {
         </View>
         <View style={s.kpiCard}>
           <Text style={s.kpiLabel}>Valor total</Text>
-          <Text style={s.kpiValue}>{formatCurrency(totals.revenue)}</Text>
+          <Text style={s.kpiValue}>{formatCurrency(totals.totalValue)}</Text>
         </View>
       </View>
 

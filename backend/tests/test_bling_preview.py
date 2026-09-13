@@ -151,12 +151,25 @@ async def test_malformed_proposal_is_rejected(payload):
 def test_http_transport_is_get_with_no_redirects(monkeypatch):
     response = Mock(status_code=200)
     response.json.return_value = {"data": {}}
-    get = Mock(return_value=response)
-    monkeypatch.setattr("bling_oauth.requests.get", get)
+    request = Mock(return_value=response)
+    monkeypatch.setattr("bling_oauth.requests.request", request)
     config = BlingOAuthConfiguration("id", "secret", "redirect", "key")
     config.get_json("/propostas-comerciais/12", "token")
-    assert get.call_args.kwargs["allow_redirects"] is False
-    assert get.call_args.kwargs["timeout"] == 15
+    assert request.call_args.args[0] == "GET"
+    assert request.call_args.kwargs["allow_redirects"] is False
+    assert request.call_args.kwargs["timeout"] == 15
     response.json.side_effect = ValueError("sensitive upstream body")
     with pytest.raises(BlingOAuthError, match="invalid response"):
         config.get_json("/propostas-comerciais/12", "token")
+
+
+def test_post_transport_is_json_with_no_redirects(monkeypatch):
+    response = Mock(status_code=201)
+    response.json.return_value = {"data": {"id": 12}}
+    request = Mock(return_value=response)
+    monkeypatch.setattr("bling_oauth.requests.request", request)
+    config = BlingOAuthConfiguration("id", "secret", "redirect", "key")
+    assert config.post_json("/pedidos/vendas", "token", {"contato": {"id": 1}}) == {"data": {"id": 12}}
+    assert request.call_args.args[0] == "POST"
+    assert request.call_args.kwargs["allow_redirects"] is False
+    assert request.call_args.kwargs["json"] == {"contato": {"id": 1}}

@@ -24,6 +24,7 @@ from fastapi import FastAPI, APIRouter, Depends, HTTPException, Request, Query
 from fastapi.responses import HTMLResponse, PlainTextResponse
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
+from pymongo.errors import DuplicateKeyError
 from pydantic import BaseModel, Field, EmailStr
 from structure_analyzer import ANALYZER_VERSION, analyze_structure
 from mapping_engine import MAPPING_ENGINE_VERSION, generate_candidate_mappings
@@ -76,8 +77,9 @@ from modules.startup.indexes import ensure_indexes
 from modules.integration_hub.adapters import create_default_registry
 from modules.integration_hub.router import create_integration_hub_router
 from bling_oauth import BlingOAuthConfiguration, BlingOAuthError
-from bling_preview import read_preview, fetch_detail, external_id
+from bling_preview import read_preview, fetch_detail, external_id, write_sales_order
 from bling_import import BlingImportValidationError, build_proposal_input
+from bling_order import BlingOrderValidationError, build_sales_order_plan
 from whatsapp_integration import (
     WhatsAppConfiguration,
     WhatsAppProviderError,
@@ -1207,6 +1209,7 @@ class ProposalItemIn(BaseModel):
     price: Optional[float] = None  # legacy fallback
     description: Optional[str] = ""
     unit: Optional[str] = "UN"
+    code: Optional[str] = ""
 
 
 class CatalogProductIn(BaseModel):
@@ -2167,7 +2170,7 @@ async def _create_proposal(data: ProposalIn, user: dict, source: dict | None = N
             subtotal += item_total
             resolved_products.append({
                 "product_id": "",
-                "code": "",
+                "code": (item.code or "").strip(),
                 "name": item.name.strip(),
                 "description": item.description or "",
                 "unit": item.unit or "UN",
@@ -2455,7 +2458,7 @@ async def update_proposal(pid: str, data: ProposalIn, user=Depends(get_current_u
             subtotal += item_total
             resolved_products.append({
                 "product_id": "",
-                "code": "",
+                "code": (item.code or "").strip(),
                 "name": item.name.strip(),
                 "description": item.description or "",
                 "unit": item.unit or "UN",
@@ -7749,6 +7752,11 @@ async def _bling_read(company_id: str, path: str, params: dict[str, str | int] |
     return await read_preview(db.integration_credentials, _bling_configuration(), company_id, path, params)
 
 
+def _public_bling_order_plan(plan: dict) -> dict:
+    """The browser may review matching results but never receives provider payload."""
+    return {key: value for key, value in plan.items() if key != "order_payload"}
+
+
 def _bling_preview_record(record: dict) -> dict:
     contact = record.get("contato") if isinstance(record.get("contato"), dict) else {}
     client = record.get("cliente") if isinstance(record.get("cliente"), dict) else {}
@@ -7918,6 +7926,112 @@ async def import_bling_commercial_proposals(request: Request, user: dict = Depen
         "results": results,
         "provider_write": False,
     }
+
+
+@api_router.get("/integrations/bling/proposals/{proposal_id}/sales-order-plan")
+async def preview_bling_sales_order_plan(proposal_id: str, user: dict = Depends(get_current_user)):
+    company_id = _safe_company_id(user)
+    proposal = await db.proposals.find_one(
+        {"id": proposal_id, "company_id": company_id, "deleted": {"$ne": True}}, {"_id": 0}
+    )
+    if not proposal:
+        raise HTTPException(404, "Proposta não encontrada")
+
+    async def read(path: str, params: dict | None = None):
+        return await _bling_read(company_id, path, params)
+
+    try:
+        plan = await build_sales_order_plan(proposal, read)
+    except BlingOrderValidationError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    except BlingOAuthError as exc:
+        raise HTTPException(503, "A integração Bling não está configurada") from exc
+    return {"mode": "PREVIEW", "provider_write": False, "ready": True, "plan": _public_bling_order_plan(plan)}
+
+
+@api_router.post("/integrations/bling/proposals/{proposal_id}/sales-order")
+async def create_bling_sales_order(proposal_id: str, request: Request, user: dict = Depends(get_current_user)):
+    """Create one sales order only after a current, reviewed plan is confirmed."""
+    body = await request.json()
+    if body.get("confirmed") is not True:
+        raise HTTPException(422, "Confirme a criação do pedido antes de continuar")
+    fingerprint = str(body.get("fingerprint") or "")
+    if not re.fullmatch(r"[a-f0-9]{64}", fingerprint):
+        raise HTTPException(422, "Abra a prévia atual antes de criar o pedido")
+    company_id = _safe_company_id(user)
+    proposal = await db.proposals.find_one(
+        {"id": proposal_id, "company_id": company_id, "deleted": {"$ne": True}}, {"_id": 0}
+    )
+    if not proposal:
+        raise HTTPException(404, "Proposta não encontrada")
+    previous = await db.bling_sales_order_exports.find_one(
+        {"company_id": company_id, "proposal_id": proposal_id}, {"_id": 0}
+    )
+    if previous:
+        if previous.get("status") == "COMPLETED":
+            return {"status": "ALREADY_CREATED", "order_id": previous.get("order_id"), "provider_write": True}
+        if previous.get("status") in {"RUNNING", "UNKNOWN"}:
+            raise HTTPException(409, "A criação deste pedido já está em andamento ou precisa ser conferida no Bling antes de tentar novamente")
+
+    async def read(path: str, params: dict | None = None):
+        return await _bling_read(company_id, path, params)
+
+    try:
+        plan = await build_sales_order_plan(proposal, read)
+    except BlingOrderValidationError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    except BlingOAuthError as exc:
+        raise HTTPException(503, "A integração Bling não está configurada") from exc
+    if plan["fingerprint"] != fingerprint:
+        raise HTTPException(409, "A proposta ou os cadastros do Bling mudaram. Revise a prévia antes de criar o pedido")
+
+    now = datetime.now(timezone.utc).isoformat()
+    reservation = {"id": str(uuid.uuid4()), "company_id": company_id, "proposal_id": proposal_id, "provider": "bling",
+                   "status": "RUNNING", "plan_fingerprint": fingerprint, "requested_by": user["id"], "requested_at": now, "updated_at": now}
+    try:
+        if previous and previous.get("status") == "FAILED":
+            claimed = await db.bling_sales_order_exports.update_one(
+                {"id": previous["id"], "company_id": company_id, "status": "FAILED"},
+                {"$set": reservation, "$unset": {"error": ""}},
+            )
+            if not claimed.modified_count:
+                raise HTTPException(409, "Abra a prévia novamente antes de tentar criar o pedido")
+            reservation["id"] = previous["id"]
+        else:
+            await db.bling_sales_order_exports.insert_one(reservation)
+    except DuplicateKeyError as exc:
+        raise HTTPException(409, "Já existe uma criação de pedido para esta proposta") from exc
+
+    try:
+        response = await write_sales_order(db.integration_credentials, _bling_configuration(), company_id, plan["order_payload"])
+        data = response.get("data") if isinstance(response, dict) else None
+        order_id = str(data.get("id") or "") if isinstance(data, dict) else ""
+        external_id(order_id)  # validates the upstream identity before persisting it
+        completed_at = datetime.now(timezone.utc).isoformat()
+        await db.bling_sales_order_exports.update_one(
+            {"id": reservation["id"], "company_id": company_id},
+            {"$set": {"status": "COMPLETED", "order_id": order_id, "completed_at": completed_at, "updated_at": completed_at}},
+        )
+        await log_audit("BLING_SALES_ORDER_CREATED", "proposal", proposal_id, None,
+                        {"order_id": order_id, "export_id": reservation["id"]}, user["id"], company_id)
+        return {"status": "CREATED", "order_id": order_id, "provider_write": True}
+    except HTTPException as exc:
+        # A provider 4xx is safe to retry after correction; timeouts and 5xx are
+        # deliberately held for manual verification because the POST may exist.
+        status = "FAILED" if 400 <= exc.status_code < 500 else "UNKNOWN"
+        message = str(exc.detail)
+        await db.bling_sales_order_exports.update_one(
+            {"id": reservation["id"], "company_id": company_id},
+            {"$set": {"status": status, "error": message, "updated_at": datetime.now(timezone.utc).isoformat()}},
+        )
+        raise
+    except Exception as exc:
+        logger.exception("Bling sales order creation outcome is unknown")
+        await db.bling_sales_order_exports.update_one(
+            {"id": reservation["id"], "company_id": company_id},
+            {"$set": {"status": "UNKNOWN", "error": "Resultado não confirmado", "updated_at": datetime.now(timezone.utc).isoformat()}},
+        )
+        raise HTTPException(502, "O resultado da criação não pôde ser confirmado. Confira o Bling antes de tentar novamente.") from exc
 
 
 @api_router.get("/integrations/bling/callback", response_class=HTMLResponse)

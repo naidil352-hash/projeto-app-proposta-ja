@@ -18,7 +18,7 @@ def detail(**changes):
 
 def test_builds_manual_proposal_and_preserves_source_identity():
     result = build_proposal_input(detail())
-    assert result["products"] == [{"name": "Peça", "description": "", "quantity": 2.0, "unit_price": 50.0, "unit": "UN"}]
+    assert result["products"] == [{"name": "Peça", "code": "", "description": "", "quantity": 2.0, "unit_price": 50.0, "unit": "UN"}]
     assert result["discount"] == 10.0
     assert result["source"] == {"provider": "bling", "external_id": "42", "external_number": "8", "provider_total": 90.0}
     assert "ID externo 42" in result["notes"]
