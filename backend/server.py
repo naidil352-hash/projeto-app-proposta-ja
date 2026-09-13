@@ -9,6 +9,7 @@ import uuid
 import csv
 import json
 import hashlib
+import re
 import logging
 import asyncio
 import zipfile
