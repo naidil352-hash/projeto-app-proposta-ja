@@ -8035,6 +8035,50 @@ async def create_bling_sales_order(proposal_id: str, request: Request, user: dic
         raise HTTPException(502, "O resultado da criação não pôde ser confirmado. Confira o Bling antes de tentar novamente.") from exc
 
 
+@api_router.post("/integrations/bling/proposals/{proposal_id}/sales-order/reconcile")
+async def reconcile_bling_sales_order(proposal_id: str, request: Request, user: dict = Depends(get_current_user)):
+    """Release an abandoned reservation only after the user verifies no order exists.
+
+    This endpoint never contacts Bling and never creates an order. A subsequent
+    fresh preview and confirmation are still required before another POST.
+    """
+    body = await request.json()
+    if body.get("confirmed_absent_in_bling") is not True:
+        raise HTTPException(422, "Confirme que verificou a ausência do pedido no Bling")
+    company_id = _safe_company_id(user)
+    previous = await db.bling_sales_order_exports.find_one(
+        {"company_id": company_id, "proposal_id": proposal_id}, {"_id": 0}
+    )
+    if not previous:
+        raise HTTPException(404, "Nenhuma criação pendente foi encontrada para esta proposta")
+    if previous.get("status") == "COMPLETED":
+        raise HTTPException(409, "Este pedido já está registrado como criado no Bling")
+    if previous.get("status") not in {"RUNNING", "UNKNOWN"}:
+        return {"status": "NOT_PENDING", "provider_write": False}
+
+    # A fresh RUNNING record could still be in the outbound request. Do not let
+    # a user release it until the provider timeout window has safely elapsed.
+    updated_at = str(previous.get("updated_at") or previous.get("requested_at") or "")
+    try:
+        pending_since = datetime.fromisoformat(updated_at.replace("Z", "+00:00"))
+    except ValueError:
+        pending_since = datetime.min.replace(tzinfo=timezone.utc)
+    if previous.get("status") == "RUNNING" and datetime.now(timezone.utc) - pending_since < timedelta(minutes=2):
+        raise HTTPException(409, "A criação ainda pode estar em andamento. Aguarde dois minutos e confira o Bling novamente.")
+
+    released_at = datetime.now(timezone.utc).isoformat()
+    released = await db.bling_sales_order_exports.update_one(
+        {"id": previous["id"], "company_id": company_id, "status": previous.get("status")},
+        {"$set": {"status": "FAILED", "error": "Ausência no Bling confirmada manualmente", "reconciled_at": released_at,
+                  "reconciled_by": user["id"], "updated_at": released_at}},
+    )
+    if not released.modified_count:
+        raise HTTPException(409, "A situação da criação mudou. Confira o Bling e abra a prévia novamente.")
+    await log_audit("BLING_SALES_ORDER_ABSENCE_CONFIRMED", "proposal", proposal_id, None,
+                    {"export_id": previous["id"], "previous_status": previous.get("status")}, user["id"], company_id)
+    return {"status": "RELEASED_AFTER_MANUAL_VERIFICATION", "provider_write": False}
+
+
 @api_router.get("/integrations/bling/callback", response_class=HTMLResponse)
 async def complete_bling_connection(code: str | None = None, state: str | None = None, error: str | None = None):
     if error or not code or not state:

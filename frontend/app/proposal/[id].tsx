@@ -306,6 +306,33 @@ export default function ProposalDetail() {
       }
       await load();
     } catch (e) {
+      const message = formatApiError(e);
+      if (message.includes("já está em andamento ou precisa ser conferida no Bling")) {
+        Alert.alert(
+          "Conferência necessária",
+          "O Proposta Já encontrou uma tentativa anterior sem resultado confirmado. Depois de verificar que não existe pedido no Bling, confirme abaixo para liberar uma nova prévia. Nenhum pedido será criado nesta etapa.",
+          [
+            { text: "Cancelar", style: "cancel" },
+            { text: "Confirmar ausência no Bling", onPress: () => { void onReconcileBlingOrder(); } },
+          ],
+        );
+      } else {
+        Alert.alert("Pedido no Bling", message);
+      }
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const onReconcileBlingOrder = async () => {
+    try {
+      setBusy(true);
+      await api.post(`/integrations/bling/proposals/${id}/sales-order/reconcile`, {
+        confirmed_absent_in_bling: true,
+      });
+      setBlingPlanOpen(false);
+      Alert.alert("Nova tentativa liberada", "A ausência do pedido no Bling foi registrada. Abra uma nova prévia e revise tudo antes de criar o pedido.");
+    } catch (e) {
       Alert.alert("Pedido no Bling", formatApiError(e));
     } finally {
       setBusy(false);
