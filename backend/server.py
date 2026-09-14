@@ -1784,6 +1784,19 @@ async def update_outbound_webhook(webhook_id: str, data: OutboundWebhookUpdateIn
     return public_config(record)
 
 
+@api_router.post("/webhooks/{webhook_id}/secret")
+async def rotate_outbound_webhook_secret(webhook_id: str, user=Depends(require_admin)):
+    secret, secret_encrypted = new_webhook_secret()
+    result = await db.outbound_webhooks.update_one(
+        {"id": webhook_id, "company_id": user["company_id"]},
+        {"$set": {"secret_encrypted": secret_encrypted, "updated_at": datetime.now(timezone.utc).isoformat()}},
+    )
+    if not result.matched_count:
+        raise HTTPException(404, "Webhook nao encontrado")
+    record = await db.outbound_webhooks.find_one({"id": webhook_id, "company_id": user["company_id"]}, {"_id": 0})
+    return public_config(record, secret=secret)
+
+
 @api_router.get("/webhooks/deliveries")
 async def list_outbound_webhook_deliveries(user=Depends(require_admin)):
     return await db.outbound_webhook_deliveries.find({"company_id": user["company_id"]}, {"_id": 0, "payload.client": 0}).sort("created_at", -1).to_list(50)
