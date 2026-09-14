@@ -81,7 +81,7 @@ from bling_oauth import BlingOAuthConfiguration, BlingOAuthError
 from bling_preview import read_preview, fetch_detail, external_id, write_sales_order
 from bling_import import BlingImportValidationError, build_proposal_input
 from bling_order import BlingOrderValidationError, build_sales_order_plan
-from outbound_webhooks import WebhookValidationError, emit_proposal_event, new_webhook_record, public_config, retry_delivery, validate_events, validate_url
+from outbound_webhooks import WebhookValidationError, emit_proposal_event, new_webhook_record, new_webhook_secret, public_config, retry_delivery, validate_events, validate_url
 from whatsapp_integration import (
     WhatsAppConfiguration,
     WhatsAppProviderError,

@@ -67,6 +67,12 @@ def public_config(record: dict, *, secret: str | None = None) -> dict:
     return result
 
 
+def new_webhook_secret() -> tuple[str, str]:
+    """Return a plaintext secret once and its encrypted value for storage."""
+    secret = secrets.token_urlsafe(32)
+    return secret, _fernet().encrypt(secret.encode()).decode()
+
+
 def proposal_payload(event: str, proposal: dict, company: dict) -> dict:
     event_id = str(uuid.uuid4())
     items = [
@@ -144,6 +150,6 @@ async def retry_delivery(database, company_id: str, delivery_id: str) -> dict:
 
 
 def new_webhook_record(company_id: str, url: str, events: list[str]) -> tuple[dict, str]:
-    secret = secrets.token_urlsafe(32)
+    secret, secret_encrypted = new_webhook_secret()
     now = _now()
-    return ({"id": "wh_" + uuid.uuid4().hex, "company_id": company_id, "url": validate_url(url), "events": validate_events(events), "enabled": True, "secret_encrypted": _fernet().encrypt(secret.encode()).decode(), "created_at": now, "updated_at": now}, secret)
+    return ({"id": "wh_" + uuid.uuid4().hex, "company_id": company_id, "url": validate_url(url), "events": validate_events(events), "enabled": True, "secret_encrypted": secret_encrypted, "created_at": now, "updated_at": now}, secret)
