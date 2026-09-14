@@ -1775,11 +1775,11 @@ async def update_outbound_webhook(webhook_id: str, data: OutboundWebhookUpdateIn
     except WebhookValidationError as exc:
         raise HTTPException(422, str(exc)) from exc
     if not changes:
-        raise HTTPException(422, "Informe uma altera+º+úo")
+        raise HTTPException(422, "Informe uma modificacao")
     changes["updated_at"] = datetime.now(timezone.utc).isoformat()
     result = await db.outbound_webhooks.update_one({"id": webhook_id, "company_id": user["company_id"]}, {"$set": changes})
     if not result.matched_count:
-        raise HTTPException(404, "Webhook n+úo encontrado")
+        raise HTTPException(404, "Webhook nao encontrado")
     record = await db.outbound_webhooks.find_one({"id": webhook_id, "company_id": user["company_id"]}, {"_id": 0, "secret_encrypted": 0})
     return public_config(record)
 
