@@ -1334,6 +1334,9 @@ function Select({ label, value, onValueChange, options, testID }: any) {
               Empresa
             </Text>
           </TouchableOpacity>
+          <TouchableOpacity style={s.tabButton} onPress={() => router.push("/integrations/webhooks")} testID="tab-integrations">
+            <Text style={s.tabButtonText}>Integrações</Text>
+          </TouchableOpacity>
           <TouchableOpacity
             style={[s.tabButton, activeTab === "templates" && s.tabButtonActive]}
             onPress={() => setActiveTab("templates")}
@@ -1644,6 +1647,9 @@ function Select({ label, value, onValueChange, options, testID }: any) {
                   <Text style={[s.tabButtonText, activeTab === "empresa" && s.tabButtonTextActive]}>
                     Empresa
                   </Text>
+                </TouchableOpacity>
+                <TouchableOpacity style={s.tabButton} onPress={() => router.push("/integrations/webhooks")} testID="tab-integrations-mobile">
+                  <Text style={s.tabButtonText}>Integrações</Text>
                 </TouchableOpacity>
                 <TouchableOpacity
                   style={[s.tabButton, activeTab === "templates" && s.tabButtonActive]}

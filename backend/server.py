@@ -81,6 +81,7 @@ from bling_oauth import BlingOAuthConfiguration, BlingOAuthError
 from bling_preview import read_preview, fetch_detail, external_id, write_sales_order
 from bling_import import BlingImportValidationError, build_proposal_input
 from bling_order import BlingOrderValidationError, build_sales_order_plan
+from outbound_webhooks import WebhookValidationError, emit_proposal_event, new_webhook_record, public_config, retry_delivery, validate_events, validate_url
 from whatsapp_integration import (
     WhatsAppConfiguration,
     WhatsAppProviderError,
@@ -1185,6 +1186,17 @@ class CompanyIn(BaseModel):
     default_currency: Optional[str] = "BRL"
     default_commercial_conditions: Optional[str] = ""
 
+
+class OutboundWebhookIn(BaseModel):
+    url: str
+    events: List[str]
+
+
+class OutboundWebhookUpdateIn(BaseModel):
+    url: Optional[str] = None
+    events: Optional[List[str]] = None
+    enabled: Optional[bool] = None
+
 class CommercialTemplateIn(BaseModel):
     name: str
     is_default: Optional[bool] = False
@@ -1734,6 +1746,55 @@ async def update_company(data: CompanyIn, user=Depends(require_admin)):
     )
     doc = await db.companies.find_one({"id": user["company_id"]}, {"_id": 0})
     return doc
+
+
+@api_router.get("/webhooks")
+async def list_outbound_webhooks(user=Depends(require_admin)):
+    records = await db.outbound_webhooks.find({"company_id": user["company_id"]}, {"_id": 0, "secret_encrypted": 0}).sort("created_at", -1).to_list(100)
+    return [public_config(record) for record in records]
+
+
+@api_router.post("/webhooks")
+async def create_outbound_webhook(data: OutboundWebhookIn, user=Depends(require_admin)):
+    try:
+        record, secret = new_webhook_record(user["company_id"], data.url, data.events)
+    except WebhookValidationError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    await db.outbound_webhooks.insert_one(record)
+    return public_config(record, secret=secret)
+
+
+@api_router.patch("/webhooks/{webhook_id}")
+async def update_outbound_webhook(webhook_id: str, data: OutboundWebhookUpdateIn, user=Depends(require_admin)):
+    changes = {key: value for key, value in data.dict(exclude_none=True).items()}
+    try:
+        if "url" in changes:
+            changes["url"] = validate_url(changes["url"])
+        if "events" in changes:
+            changes["events"] = validate_events(changes["events"])
+    except WebhookValidationError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    if not changes:
+        raise HTTPException(422, "Informe uma altera+º+úo")
+    changes["updated_at"] = datetime.now(timezone.utc).isoformat()
+    result = await db.outbound_webhooks.update_one({"id": webhook_id, "company_id": user["company_id"]}, {"$set": changes})
+    if not result.matched_count:
+        raise HTTPException(404, "Webhook n+úo encontrado")
+    record = await db.outbound_webhooks.find_one({"id": webhook_id, "company_id": user["company_id"]}, {"_id": 0, "secret_encrypted": 0})
+    return public_config(record)
+
+
+@api_router.get("/webhooks/deliveries")
+async def list_outbound_webhook_deliveries(user=Depends(require_admin)):
+    return await db.outbound_webhook_deliveries.find({"company_id": user["company_id"]}, {"_id": 0, "payload.client": 0}).sort("created_at", -1).to_list(50)
+
+
+@api_router.post("/webhooks/deliveries/{delivery_id}/retry")
+async def retry_outbound_webhook_delivery(delivery_id: str, user=Depends(require_admin)):
+    try:
+        return await retry_delivery(db, user["company_id"], delivery_id)
+    except WebhookValidationError as exc:
+        raise HTTPException(404, str(exc)) from exc
 
 # Helper function to ensure default commercial template exists
 async def ensure_default_template(company_id: str):
@@ -2297,6 +2358,8 @@ async def _create_proposal(data: ProposalIn, user: dict, source: dict | None = N
         user_id=user["id"],
         company_id=user["company_id"]
     )
+    company = await db.companies.find_one({"id": user["company_id"]}, {"_id": 0}) or {}
+    await emit_proposal_event(db, "proposal.created", doc, company)
     
     return normalize_proposal(doc)
 
@@ -2831,6 +2894,9 @@ async def accept_proposal(pid: str, data: AcceptIn, request: Request):
         user_id=doc.get("user_id", ""),
         company_id=doc.get("company_id", "")
     )
+    if data.accepted:
+        company = await db.companies.find_one({"id": doc.get("company_id", "")}, {"_id": 0}) or {}
+        await emit_proposal_event(db, "proposal.accepted", updated_doc, company)
     
     return normalize_proposal(updated_doc)
 
@@ -8015,6 +8081,8 @@ async def create_bling_sales_order(proposal_id: str, request: Request, user: dic
         )
         await log_audit("BLING_SALES_ORDER_CREATED", "proposal", proposal_id, None,
                         {"order_id": order_id, "export_id": reservation["id"]}, user["id"], company_id)
+        company = await db.companies.find_one({"id": company_id}, {"_id": 0}) or {}
+        await emit_proposal_event(db, "bling.sales_order.created", {**proposal, "bling_order_id": order_id}, company)
         return {"status": "CREATED", "order_id": order_id, "provider_write": True}
     except HTTPException as exc:
         # A provider 4xx is safe to retry after correction; timeouts and 5xx are
