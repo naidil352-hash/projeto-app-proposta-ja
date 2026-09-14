@@ -112,6 +112,25 @@ def proposal_payload(event: str, proposal: dict, company: dict) -> dict:
     }
 
 
+def _n8n_json_bytes(payload: dict) -> bytes:
+    """Serialize JSON in the same numeric form produced by JavaScript JSON.stringify.
+
+    The n8n webhook node parses JSON before the Code node verifies it. JavaScript
+    serializes integral floats as ``0`` while Python's json.dumps emits ``0.0``.
+    Normalizing them before both sending and signing keeps the HMAC reproducible.
+    """
+    def normalize(value):
+        if isinstance(value, float) and value.is_integer():
+            return int(value)
+        if isinstance(value, dict):
+            return {key: normalize(item) for key, item in value.items()}
+        if isinstance(value, list):
+            return [normalize(item) for item in value]
+        return value
+
+    return json.dumps(normalize(payload), ensure_ascii=False, separators=(",", ":")).encode()
+
+
 async def emit_proposal_event(database, event: str, proposal: dict, company: dict) -> None:
     """Persist every delivery before sending it; failures stay visible for retry."""
     if event not in EVENTS:
@@ -125,7 +144,7 @@ async def emit_proposal_event(database, event: str, proposal: dict, company: dic
 
 
 async def deliver(database, delivery: dict, config: dict) -> None:
-    body = json.dumps(delivery["payload"], ensure_ascii=False, separators=(",", ":")).encode()
+    body = _n8n_json_bytes(delivery["payload"])
     secret = _fernet().decrypt(config["secret_encrypted"].encode()).decode()
     timestamp = str(int(datetime.now(timezone.utc).timestamp()))
     signature = hmac.new(secret.encode(), f"{timestamp}.".encode() + body, hashlib.sha256).hexdigest()
