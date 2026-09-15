@@ -88,7 +88,7 @@ from modules.integration_hub.router import create_integration_hub_router
 from bling_oauth import BlingOAuthConfiguration, BlingOAuthError
 from bling_preview import read_preview, fetch_detail, external_id, write_sales_order
 from bling_import import BlingImportValidationError, build_proposal_input
-from bling_order import BlingOrderValidationError, build_sales_order_plan
+from bling_order import BlingOrderValidationError, build_automatic_sales_order_plan, build_sales_order_plan
 from outbound_webhooks import WebhookValidationError, emit_proposal_event, new_webhook_record, new_webhook_secret, public_config, retry_delivery, validate_events, validate_url
 from proposal_pdf import build_proposal_pdf
 from whatsapp_integration import (
@@ -8276,6 +8276,139 @@ async def preview_bling_sales_order_plan(proposal_id: str, user: dict = Depends(
     except BlingOAuthError as exc:
         raise HTTPException(503, "A integração Bling não está configurada") from exc
     return {"mode": "PREVIEW", "provider_write": False, "ready": True, "plan": _public_bling_order_plan(plan)}
+
+
+def _require_n8n_automation_key(request: Request) -> None:
+    """Authenticate n8n without exposing an end-user session to the workflow."""
+    configured = os.getenv("N8N_AUTOMATION_API_KEY", "")
+    supplied = request.headers.get("x-propostaja-automation-key", "")
+    if not configured:
+        raise HTTPException(503, "A automação de pedidos do Bling não está configurada")
+    if not supplied or not hmac.compare_digest(supplied, configured):
+        raise HTTPException(403, "Chave da automação inválida")
+
+
+@api_router.post("/automation/proposals/{proposal_id}/bling-sales-order")
+async def create_automatic_bling_sales_order(proposal_id: str, request: Request):
+    """Create one Bling order for an accepted proposal, idempotently.
+
+    This endpoint is called only by the authenticated n8n workflow after its
+    HMAC signature check. Corrections remain in Bling; uncertain writes are
+    deliberately held to prevent a duplicate sales order.
+    """
+    _require_n8n_automation_key(request)
+    proposal = await db.proposals.find_one(
+        {"id": proposal_id, "deleted": {"$ne": True}}, {"_id": 0}
+    )
+    if not proposal:
+        raise HTTPException(404, "Proposta não encontrada")
+    company_id = str(proposal.get("company_id") or "")
+    if not company_id:
+        raise HTTPException(422, "A proposta não possui empresa vinculada")
+
+    previous = await db.bling_sales_order_exports.find_one(
+        {"company_id": company_id, "proposal_id": proposal_id}, {"_id": 0}
+    )
+    if previous:
+        if previous.get("status") == "COMPLETED":
+            return {"status": "ALREADY_CREATED", "order_id": previous.get("order_id"), "provider_write": True}
+        if previous.get("status") in {"RUNNING", "UNKNOWN"}:
+            raise HTTPException(409, "A criação deste pedido já está em andamento ou precisa ser conferida no Bling")
+
+    now = datetime.now(timezone.utc).isoformat()
+    reservation = {
+        "id": str(uuid.uuid4()), "company_id": company_id, "proposal_id": proposal_id,
+        "provider": "bling", "status": "RUNNING", "requested_by": "automation:n8n",
+        "requested_at": now, "updated_at": now,
+    }
+    try:
+        if previous and previous.get("status") == "FAILED":
+            claimed = await db.bling_sales_order_exports.update_one(
+                {"id": previous["id"], "company_id": company_id, "status": "FAILED"},
+                {"$set": reservation, "$unset": {"error": "", "plan_fingerprint": ""}},
+            )
+            if not claimed.modified_count:
+                raise HTTPException(409, "A criação deste pedido já está em andamento")
+            reservation["id"] = previous["id"]
+        else:
+            await db.bling_sales_order_exports.insert_one(reservation)
+    except DuplicateKeyError as exc:
+        raise HTTPException(409, "Já existe uma criação de pedido para esta proposta") from exc
+
+    async def read(path: str, params: dict | None = None):
+        return await _bling_read(company_id, path, params)
+
+    async def write(path: str, payload: dict):
+        entity_name = "cliente" if path == "/contatos" else "produto"
+        return await write_sales_order(
+            db.integration_credentials, _bling_configuration(), company_id, payload,
+            path=path, entity_name=entity_name,
+        )
+
+    try:
+        plan = await build_automatic_sales_order_plan(proposal, read, write)
+        await db.bling_sales_order_exports.update_one(
+            {"id": reservation["id"], "company_id": company_id},
+            {"$set": {"plan_fingerprint": plan["fingerprint"], "updated_at": datetime.now(timezone.utc).isoformat()}},
+        )
+    except BlingOrderValidationError as exc:
+        await db.bling_sales_order_exports.update_one(
+            {"id": reservation["id"], "company_id": company_id},
+            {"$set": {"status": "FAILED", "error": str(exc), "updated_at": datetime.now(timezone.utc).isoformat()}},
+        )
+        raise HTTPException(422, str(exc)) from exc
+    except HTTPException as exc:
+        status = "FAILED" if 400 <= exc.status_code < 500 else "UNKNOWN"
+        await db.bling_sales_order_exports.update_one(
+            {"id": reservation["id"], "company_id": company_id},
+            {"$set": {"status": status, "error": str(exc.detail), "updated_at": datetime.now(timezone.utc).isoformat()}},
+        )
+        raise
+    except BlingOAuthError as exc:
+        await db.bling_sales_order_exports.update_one(
+            {"id": reservation["id"], "company_id": company_id},
+            {"$set": {"status": "FAILED", "error": "A integração Bling não está configurada", "updated_at": datetime.now(timezone.utc).isoformat()}},
+        )
+        raise HTTPException(503, "A integração Bling não está configurada") from exc
+
+    try:
+        response = await write_sales_order(
+            db.integration_credentials, _bling_configuration(), company_id, plan["order_payload"]
+        )
+        data = response.get("data") if isinstance(response, dict) else None
+        order_id = str(data.get("id") or "") if isinstance(data, dict) else ""
+        external_id(order_id)
+        completed_at = datetime.now(timezone.utc).isoformat()
+        await db.bling_sales_order_exports.update_one(
+            {"id": reservation["id"], "company_id": company_id},
+            {"$set": {"status": "COMPLETED", "order_id": order_id, "completed_at": completed_at, "updated_at": completed_at}},
+        )
+        await db.proposals.update_one(
+            {"id": proposal_id, "company_id": company_id},
+            {"$set": {"bling_order_id": order_id, "updated_at": completed_at}},
+        )
+        await log_audit(
+            "BLING_SALES_ORDER_CREATED", "proposal", proposal_id, None,
+            {"order_id": order_id, "export_id": reservation["id"], "origin": "n8n"},
+            "automation:n8n", company_id,
+        )
+        company = await db.companies.find_one({"id": company_id}, {"_id": 0}) or {}
+        await emit_proposal_event(db, "bling.sales_order.created", {**proposal, "bling_order_id": order_id}, company)
+        return {"status": "CREATED", "order_id": order_id, "provider_write": True}
+    except HTTPException as exc:
+        status = "FAILED" if 400 <= exc.status_code < 500 else "UNKNOWN"
+        await db.bling_sales_order_exports.update_one(
+            {"id": reservation["id"], "company_id": company_id},
+            {"$set": {"status": status, "error": str(exc.detail), "updated_at": datetime.now(timezone.utc).isoformat()}},
+        )
+        raise
+    except Exception as exc:
+        logger.exception("Automatic Bling sales order outcome is unknown")
+        await db.bling_sales_order_exports.update_one(
+            {"id": reservation["id"], "company_id": company_id},
+            {"$set": {"status": "UNKNOWN", "error": "Resultado não confirmado", "updated_at": datetime.now(timezone.utc).isoformat()}},
+        )
+        raise HTTPException(502, "O resultado da criação não pôde ser confirmado. Confira o Bling antes de tentar novamente.") from exc
 
 
 @api_router.post("/integrations/bling/proposals/{proposal_id}/sales-order")

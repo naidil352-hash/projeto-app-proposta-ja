@@ -67,8 +67,8 @@ async def read_preview(credentials, configuration, company_id, path, params=None
         raise HTTPException(502, "Não foi possível consultar o Bling. Tente novamente ou reconecte sua conta.") from exc
 
 
-async def write_sales_order(credentials, configuration, company_id, payload):
-    """Create exactly one explicitly-confirmed order, refreshing only after a 401.
+async def write_sales_order(credentials, configuration, company_id, payload, *, path="/pedidos/vendas", entity_name="pedido"):
+    """Write one Bling resource, refreshing only after a 401.
 
     A transport error is intentionally surfaced to the caller without a retry: the
     provider may have received the request even when its response was lost.
@@ -79,7 +79,7 @@ async def write_sales_order(credentials, configuration, company_id, payload):
         raise HTTPException(409, "Conecte sua conta Bling")
 
     async def post(token):
-        return await asyncio.to_thread(configuration.post_json, "/pedidos/vendas", token, payload)
+        return await asyncio.to_thread(configuration.post_json, path, token, payload)
 
     try:
         try:
@@ -114,10 +114,10 @@ async def write_sales_order(credentials, configuration, company_id, payload):
             await credentials.update_one({**scope, "refresh_lease": lease}, {"$unset": {"refresh_lease": "", "refresh_lease_until": ""}})
         return await post(tokens["access_token"])
     except BlingApiError as exc:
-        messages = {401: "Reconecte sua conta Bling", 403: "O aplicativo Bling não possui permissão para criar pedidos", 404: "Registro não encontrado no Bling", 429: "Limite do Bling atingido. Tente novamente em instantes."}
+        messages = {401: "Reconecte sua conta Bling", 403: f"O aplicativo Bling não possui permissão para criar {entity_name}", 404: "Registro não encontrado no Bling", 429: "Limite do Bling atingido. Tente novamente em instantes."}
         if exc.status_code in {400, 422}:
-            raise HTTPException(422, f"O Bling recusou os dados do pedido: {exc}") from exc
-        raise HTTPException(exc.status_code if exc.status_code in messages else 502, messages.get(exc.status_code, "Não foi possível criar o pedido no Bling")) from exc
+            raise HTTPException(422, f"O Bling recusou os dados de {entity_name}: {exc}") from exc
+        raise HTTPException(exc.status_code if exc.status_code in messages else 502, messages.get(exc.status_code, f"Não foi possível criar {entity_name} no Bling")) from exc
 
 
 def number(value):
