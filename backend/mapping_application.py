@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 import hashlib
+import json
 from typing import Any
 
 from mapping_engine import normalize_field_name
@@ -29,6 +30,42 @@ def source_identity(source: dict[str, Any]) -> dict[str, Any]:
 def source_key(source: dict[str, Any]) -> tuple[Any, Any, Any]:
     identity = source_identity(source)
     return identity["sheet_name"], identity["source_index"], identity["source_name"]
+
+
+def merge_effective_decisions(
+    decisions: list[dict[str, Any]],
+    confirmations: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Overlay the latest human decision without mutating engine decisions."""
+    latest = {}
+    for confirmation in sorted(confirmations, key=lambda item: item.get("confirmed_at", "")):
+        latest[source_key(confirmation)] = confirmation
+
+    effective = []
+    for decision in decisions:
+        merged = dict(decision)
+        confirmation = latest.get(source_key(decision))
+        merged["engine_decision"] = decision.get("decision", "UNKNOWN")
+        if confirmation:
+            merged["decision"] = confirmation.get("decision", merged["engine_decision"])
+            merged["effective_decision"] = confirmation.get("decision")
+            merged["confirmation"] = {
+                key: confirmation.get(key)
+                for key in ("id", "decision", "target_field", "confirmed_by", "confirmed_at", "reason")
+            }
+        else:
+            merged["effective_decision"] = merged["engine_decision"]
+            merged["confirmation"] = None
+        effective.append(merged)
+    return effective
+
+
+def confirmation_is_replay(existing: dict[str, Any] | None, proposed: dict[str, Any]) -> bool:
+    return bool(
+        existing
+        and existing.get("decision") == proposed.get("decision")
+        and existing.get("target_field") == proposed.get("target_field")
+    )
 
 
 def validate_source(profile: dict[str, Any], requested: dict[str, Any]) -> bool:
@@ -65,7 +102,7 @@ def create_confirmation(
     now = utc_now()
     identity = source_key({"source_field": source_field})
     return {
-        "id": "confirmation-" + hashlib.sha256(f"{company_id}:{batch_id}:{identity}:{now}".encode()).hexdigest()[:24],
+        "id": "confirmation-" + hashlib.sha256(f"{company_id}:{batch_id}:{identity}".encode()).hexdigest()[:24],
         "company_id": company_id,
         "import_batch_id": batch_id,
         "source_field": source_field,
@@ -126,6 +163,30 @@ def create_template(company_id: str, name: str, profile: dict[str, Any], confirm
     }
 
 
+def mapping_template_fingerprint(profile: dict[str, Any], confirmations: list[dict[str, Any]]) -> str:
+    mappings = [
+        {"source_field": item["source_field"], "target_field": item["target_field"], "decision": item["decision"]}
+        for item in confirmations if item.get("decision") in {"CONFIRMED", "MODIFIED"} and item.get("target_field")
+    ]
+    return mapping_template_content_fingerprint(build_source_signature(profile), mappings)
+
+
+def mapping_template_content_fingerprint(source_signature: dict[str, Any], mappings: list[dict[str, Any]]) -> str:
+    normalized_mappings = sorted(
+        mappings,
+        key=lambda item: (*source_key(item), str(item.get("target_field", "")), str(item.get("decision", ""))),
+    )
+    payload = {"source_signature": source_signature, "mappings": normalized_mappings}
+    return hashlib.sha256(json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+
+def serializable_mapping_template(template: dict[str, Any], idempotent_replay: bool = False) -> dict[str, Any]:
+    return {
+        **{key: value for key, value in template.items() if key != "_id"},
+        "idempotent_replay": idempotent_replay,
+    }
+
+
 def detect_template_drift(profile: dict[str, Any], template: dict[str, Any]) -> dict[str, Any]:
     current = build_source_signature(profile)
     expected = template.get("source_signature", {})
@@ -150,15 +211,19 @@ def detect_template_drift(profile: dict[str, Any], template: dict[str, Any]) -> 
 
 
 def build_application_plan(profile: dict[str, Any], confirmations: list[dict[str, Any]], template: dict[str, Any] | None = None) -> dict[str, Any]:
-    identity_map = {source_key(item): item for item in confirmations if item.get("decision") in {"CONFIRMED", "MODIFIED"}}
+    # Keep the latest effective decision for each source, including rejections.
+    # Filtering before deduplication would allow an older/template mapping to
+    # survive after the user explicitly rejected the same source field.
+    decision_map = {source_key(item): item for item in confirmations}
     drift = detect_template_drift(profile, template) if template else {"status": "NO_DRIFT", "changes": []}
     items = []
     for sheet in profile.get("sheets", []):
         for column in sheet.get("columns", []):
             identity = {"sheet_name": sheet.get("sheet_name"), "source_index": column.get("source_index", 0), "source_name": column.get("source_name", "")}
-            confirmation = identity_map.get(source_key({"source_field": identity}))
-            if not confirmation:
-                items.append({"source_field": identity, "target_field": None, "action": "SKIP", "status": "SKIPPED", "reason": "MAPPING_NOT_CONFIRMED"})
+            confirmation = decision_map.get(source_key({"source_field": identity}))
+            if not confirmation or confirmation.get("decision") not in {"CONFIRMED", "MODIFIED"}:
+                reason = "MAPPING_REJECTED" if confirmation and confirmation.get("decision") == "REJECTED" else "MAPPING_NOT_CONFIRMED"
+                items.append({"source_field": identity, "target_field": None, "action": "SKIP", "status": "SKIPPED", "reason": reason})
             elif drift["status"] == "HIGH_DRIFT":
                 items.append({"source_field": identity, "target_field": confirmation.get("target_field"), "action": "MAP", "status": "BLOCKED", "reason": "TEMPLATE_DRIFT"})
             else:
