@@ -1,15 +1,16 @@
-from dotenv import load_dotenv
 from pathlib import Path
 
+from configuration import configure_backend_environment
+
 ROOT_DIR = Path(__file__).parent
-load_dotenv(ROOT_DIR / ".env", override=True)
+CONFIG_PATH = configure_backend_environment(ROOT_DIR)
 
 import os
 import uuid
 import csv
 import json
-import hashlib
 import re
+import hashlib
 import logging
 import asyncio
 import zipfile
@@ -22,7 +23,7 @@ from typing import List, Optional, Literal
 from xml.etree import ElementTree as ET
 
 from fastapi import FastAPI, APIRouter, Depends, HTTPException, Request, Query
-from fastapi.responses import HTMLResponse, PlainTextResponse
+from fastapi.responses import HTMLResponse, PlainTextResponse, Response
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 from pymongo.errors import DuplicateKeyError
@@ -36,11 +37,17 @@ from mapping_application import (
     build_source_signature,
     create_confirmation,
     create_template as create_mapping_template,
+    confirmation_is_replay,
     apply_standard_records,
     detect_template_drift,
+    merge_effective_decisions,
+    mapping_template_content_fingerprint,
+    mapping_template_fingerprint,
+    serializable_mapping_template,
     source_key,
     validate_source,
 )
+from import_materialization import build_proposal_candidates
 from learning_engine import (
     LEARNING_VERSION,
     build_learning_summary,
@@ -82,6 +89,7 @@ from bling_preview import read_preview, fetch_detail, external_id, write_sales_o
 from bling_import import BlingImportValidationError, build_proposal_input
 from bling_order import BlingOrderValidationError, build_sales_order_plan
 from outbound_webhooks import WebhookValidationError, emit_proposal_event, new_webhook_record, new_webhook_secret, public_config, retry_delivery, validate_events, validate_url
+from proposal_pdf import build_proposal_pdf
 from whatsapp_integration import (
     WhatsAppConfiguration,
     WhatsAppProviderError,
@@ -136,10 +144,6 @@ def ensure_db_for_current_loop():
             pass
         client = AsyncIOMotorClient(mongo_url)
         db = client[DB_NAME]
-
-
-ensure_db_for_current_loop()
-
 
 # ---------- App ----------
 app = FastAPI(title="PROPOSTA JÁ API")
@@ -415,11 +419,18 @@ def _xlsx_cell_value(cell: ET.Element | None, shared_strings: list[str]) -> str:
     if cell_type == "inlineStr":
         text = "".join(node.text or "" for node in cell.iter() if node.tag.endswith("}t"))
         return text
+    value_node = cell.find("{*}v")
+    if value_node is None:
+        value_node = cell.find("v")
+    if value_node is None or value_node.text is None:
+        return ""
     if cell_type == "s":
-        idx = int((cell.find("{*}v") or cell.find("v")).text or "0")
-        return shared_strings[idx] if idx < len(shared_strings) else ""
-    value_node = cell.find("{*}v") or cell.find("v")
-    return (value_node.text if value_node is not None else "")
+        try:
+            idx = int(value_node.text)
+        except (TypeError, ValueError):
+            return ""
+        return shared_strings[idx] if 0 <= idx < len(shared_strings) else ""
+    return value_node.text
 
 
 def _parse_xlsx_file(file_path: str) -> list[dict]:
@@ -3756,6 +3767,32 @@ async def get_public_proposal(pid: str, request: Request):
     }
 
 
+@api_router.get("/public/proposals/code/{code}/pdf")
+async def get_public_proposal_pdf(code: str):
+    """PDF acessível pelo mesmo código público da proposta, para arquivo no n8n."""
+    code_upper = code.upper().strip()
+    doc = await db.proposals.find_one(
+        {"public_code": code_upper, "deleted": {"$ne": True}}, {"_id": 0}
+    )
+    if not doc:
+        raise HTTPException(status_code=404, detail="Proposta não encontrada")
+
+    company = {}
+    if doc.get("company_id"):
+        company = await db.companies.find_one({"id": doc["company_id"]}, {"_id": 0}) or {}
+
+    pdf_bytes = await asyncio.to_thread(build_proposal_pdf, normalize_proposal(doc), company)
+    filename = f"proposta-{code_upper}.pdf"
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f'inline; filename="{filename}"',
+            "Cache-Control": "private, max-age=300",
+        },
+    )
+
+
 @api_router.get("/public/proposals/code/{code}")
 async def get_public_proposal_by_code(code: str, request: Request):
     code_upper = code.upper().strip()
@@ -4316,6 +4353,7 @@ def _get_mapping_decisions_filter(user: dict, batch_id: str) -> dict:
 
 
 async def _get_mapping_decisions_response(user: dict, batch_id: str) -> dict:
+    company_id = _safe_company_id(user)
     documents = await db.mapping_decisions.find(
         _get_mapping_decisions_filter(user, batch_id),
         {"_id": 0},
@@ -4325,6 +4363,11 @@ async def _get_mapping_decisions_response(user: dict, batch_id: str) -> dict:
     ]).to_list(10000)
     if not documents:
         raise HTTPException(status_code=404, detail="Decisões de mapping não encontradas")
+    confirmations = await db.mapping_confirmations.find(
+        {"company_id": company_id, "import_batch_id": batch_id},
+        {"_id": 0},
+    ).sort("confirmed_at", 1).to_list(10000)
+    documents = merge_effective_decisions(documents, confirmations)
     counts = {"auto": 0, "suggest": 0, "confirm": 0, "unknown": 0}
     for document in documents:
         key = str(document.get("decision", "UNKNOWN")).lower()
@@ -4467,6 +4510,13 @@ async def create_import_mapping_confirmation(batch_id: str, request: Request, us
     company_id = _safe_company_id(user)
     source_field = body.get("source_field_identity") or body.get("source_field") or {}
     action = str(body.get("action", "")).upper()
+    identity_filter = {
+        "company_id": company_id,
+        "import_batch_id": batch_id,
+        "source_field.sheet_name": source_field.get("sheet_name", ""),
+        "source_field.source_index": source_field.get("source_index", 0),
+        "source_field.source_name": source_field.get("source_name", ""),
+    }
     profile = await db.import_structure_profiles.find_one({"company_id": company_id, "import_batch_id": batch_id}, {"_id": 0}, sort=[("created_at", -1)])
     if not profile or not validate_source(profile, source_field):
         raise HTTPException(status_code=400, detail="Campo de origem não existe no StructureProfile")
@@ -4476,19 +4526,34 @@ async def create_import_mapping_confirmation(batch_id: str, request: Request, us
         confirmation = create_confirmation(company_id, batch_id, source_field, target, action, user["id"], previous, body.get("template_id"), body.get("template_version"), body.get("reason", ""))
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    existing = await db.mapping_confirmations.find_one(identity_filter, {"_id": 0})
+    if confirmation_is_replay(existing, confirmation):
+        return {**existing, "effective_decision": existing["decision"], "idempotent_replay": True}
+    if existing and not bool(body.get("replace_existing", False)):
+        raise HTTPException(status_code=409, detail="Esta origem já possui decisão. Use a opção Alterar decisão para substituí-la.")
     if confirmation.get("target_field") and action != "REJECT":
-        conflict = await db.mapping_confirmations.find_one({"company_id": company_id, "import_batch_id": batch_id, "target_field": confirmation["target_field"], "decision": "CONFIRMED", "source_field": {"$ne": source_field}}, {"_id": 0})
+        conflict = await db.mapping_confirmations.find_one({"company_id": company_id, "import_batch_id": batch_id, "target_field": confirmation["target_field"], "decision": {"$in": ["CONFIRMED", "MODIFIED"]}, "source_field": {"$ne": source_field}}, {"_id": 0})
         if conflict:
             raise HTTPException(status_code=409, detail="TARGET_CONFLICT: target já está confirmado para outro campo")
-    await db.mapping_confirmations.insert_one(confirmation)
-    await log_audit(action=f"MAPPING_CONFIRMATION_{confirmation['decision']}", entity_type="mapping_confirmation", entity_id=confirmation["id"], old_value=previous, new_value={"target_field": target, "decision": confirmation["decision"]}, user_id=user["id"], company_id=company_id)
+    try:
+        await db.mapping_confirmations.update_one(
+            identity_filter,
+            {"$set": confirmation, "$setOnInsert": {"_id": confirmation["id"]}},
+            upsert=True,
+        )
+    except DuplicateKeyError:
+        concurrent = await db.mapping_confirmations.find_one(identity_filter, {"_id": 0})
+        if confirmation_is_replay(concurrent, confirmation):
+            return {**concurrent, "effective_decision": concurrent["decision"], "idempotent_replay": True}
+        raise HTTPException(status_code=409, detail="A decisão foi alterada simultaneamente. Recarregue e tente novamente.")
+    await log_audit(action=f"MAPPING_CONFIRMATION_{confirmation['decision']}", entity_type="mapping_confirmation", entity_id=confirmation["id"], old_value=existing or previous, new_value={"target_field": target, "decision": confirmation["decision"]}, user_id=user["id"], company_id=company_id)
     try:
         learning_type = {"CONFIRMED": "MAPPING_CONFIRMED", "REJECTED": "MAPPING_REJECTED", "MODIFIED": "MAPPING_MODIFIED"}[confirmation["decision"]]
         source_pattern = {"normalized_name": source_field.get("source_name", ""), "type": "UNKNOWN", "sheet_context": source_field.get("sheet_name", ""), "patterns": []}
         await _create_learning_event_and_project(company_id, learning_type, "mapping_confirmation", confirmation["id"], {"source_pattern": source_pattern, "target_field": target}, {"decision": confirmation["decision"]}, user["id"])
     except Exception:
         logging.exception("Learning event could not be recorded for confirmation")
-    return {key: value for key, value in confirmation.items() if key != "_id"}
+    return {**{key: value for key, value in confirmation.items() if key != "_id"}, "effective_decision": confirmation["decision"], "idempotent_replay": False}
 
 
 @api_router.get("/imports/{batch_id}/mapping-confirmations")
@@ -4499,24 +4564,51 @@ async def list_import_mapping_confirmations(batch_id: str, user=Depends(get_curr
 
 @api_router.post("/imports/{batch_id}/mapping-template")
 async def create_import_mapping_template(batch_id: str, request: Request, user=Depends(get_current_user)):
-    body = await request.json()
-    company_id = _safe_company_id(user)
-    profile = await db.import_structure_profiles.find_one({"company_id": company_id, "import_batch_id": batch_id}, {"_id": 0}, sort=[("created_at", -1)])
-    if not profile:
-        raise HTTPException(status_code=404, detail="Perfil estrutural não encontrado")
-    confirmations = await db.mapping_confirmations.find({"company_id": company_id, "import_batch_id": batch_id}, {"_id": 0}).to_list(10000)
-    if not confirmations:
-        raise HTTPException(status_code=400, detail="Nenhum mapping confirmado")
-    latest = await db.mapping_templates.find_one({"company_id": company_id, "name": body.get("name", "Template de importação")}, sort=[("template_version", -1)])
-    version = int(latest.get("template_version", 0)) + 1 if latest else 1
-    template = create_mapping_template(company_id, body.get("name", "Template de importação"), profile, confirmations, user["id"], version, latest.get("template_version") if latest else None, body.get("change_reason", ""))
-    await db.mapping_templates.insert_one(template)
-    await log_audit(action="MAPPING_TEMPLATE_VERSION_CREATED" if latest else "MAPPING_TEMPLATE_CREATED", entity_type="mapping_template", entity_id=template["template_id"], old_value=latest, new_value={"template_version": version, "mapping_count": len(template["mappings"])}, user_id=user["id"], company_id=company_id)
     try:
-        await _create_learning_event_and_project(company_id, "TEMPLATE_CREATED", "mapping_template", template["template_id"], {"source_pattern": {"normalized_name": "template", "type": "STRUCTURE", "sheet_context": "", "patterns": []}, "target_field": "template"}, {"template_version": version}, user["id"])
-    except Exception:
-        logging.exception("Learning event could not be recorded for template")
-    return template
+        body = await request.json()
+        company_id = _safe_company_id(user)
+        name = body.get("name", "Template de importação")
+        profile = await db.import_structure_profiles.find_one({"company_id": company_id, "import_batch_id": batch_id}, {"_id": 0}, sort=[("created_at", -1)])
+        if not profile:
+            raise HTTPException(status_code=404, detail="Perfil estrutural não encontrado")
+        confirmations = await db.mapping_confirmations.find({"company_id": company_id, "import_batch_id": batch_id}, {"_id": 0}).to_list(10000)
+        if not confirmations:
+            raise HTTPException(status_code=400, detail="Nenhum mapping confirmado")
+
+        fingerprint = mapping_template_fingerprint(profile, confirmations)
+        latest = await db.mapping_templates.find_one({"company_id": company_id, "name": name}, {"_id": 0}, sort=[("template_version", -1)])
+        if latest:
+            latest_fingerprint = latest.get("content_fingerprint") or mapping_template_content_fingerprint(latest.get("source_signature", {}), latest.get("mappings", []))
+            same_batch = latest.get("import_batch_id") in (None, batch_id)
+            if same_batch and latest_fingerprint == fingerprint:
+                return serializable_mapping_template(latest, idempotent_replay=True)
+
+        version = int(latest.get("template_version", 0)) + 1 if latest else 1
+        template = create_mapping_template(company_id, name, profile, confirmations, user["id"], version, latest.get("template_version") if latest else None, body.get("change_reason", ""))
+        template.update({
+            "import_batch_id": batch_id,
+            "content_fingerprint": fingerprint,
+            "template_id": "template-" + hashlib.sha256(f"{company_id}:{batch_id}:{name}:{fingerprint}".encode()).hexdigest()[:24],
+        })
+        stored_template = {**template, "_id": template["template_id"]}
+        try:
+            await db.mapping_templates.insert_one(stored_template)
+        except DuplicateKeyError:
+            concurrent = await db.mapping_templates.find_one({"_id": template["template_id"], "company_id": company_id}, {"_id": 0})
+            if concurrent:
+                return serializable_mapping_template(concurrent, idempotent_replay=True)
+            raise
+        await log_audit(action="MAPPING_TEMPLATE_VERSION_CREATED" if latest else "MAPPING_TEMPLATE_CREATED", entity_type="mapping_template", entity_id=template["template_id"], old_value=latest, new_value={"template_version": version, "mapping_count": len(template["mappings"])}, user_id=user["id"], company_id=company_id)
+        try:
+            await _create_learning_event_and_project(company_id, "TEMPLATE_CREATED", "mapping_template", template["template_id"], {"source_pattern": {"normalized_name": "template", "type": "STRUCTURE", "sheet_context": "", "patterns": []}, "target_field": "template"}, {"template_version": version}, user["id"])
+        except Exception:
+            logging.exception("Learning event could not be recorded for template")
+        return serializable_mapping_template(template)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logging.exception("Mapping template creation failed")
+        raise HTTPException(status_code=500, detail="Não foi possível salvar o template de importação. Tente novamente após recarregar a tela.") from exc
 
 
 @api_router.get("/mapping-templates")
@@ -4532,6 +4624,20 @@ async def get_mapping_template(template_id: str, user=Depends(get_current_user))
     if not template:
         raise HTTPException(status_code=404, detail="Template não encontrado")
     return template
+
+
+@api_router.get("/imports/{batch_id}/mapping-template")
+async def get_import_mapping_template(batch_id: str, user=Depends(get_current_user)):
+    """Return the template actually saved for this batch (survives UI reloads)."""
+    company_id = _safe_company_id(user)
+    template = await db.mapping_templates.find_one(
+        {"company_id": company_id, "import_batch_id": batch_id, "status": "ACTIVE"},
+        {"_id": 0},
+        sort=[("updated_at", -1), ("template_version", -1)],
+    )
+    if not template:
+        raise HTTPException(status_code=404, detail="Template desta importação não encontrado")
+    return serializable_mapping_template(template, idempotent_replay=True)
 
 
 @api_router.put("/mapping-templates/{template_id}")
@@ -4565,10 +4671,15 @@ async def _build_mapping_application_plan(batch_id: str, user: dict, template_id
         template = await db.mapping_templates.find_one({"company_id": company_id, "template_id": template_id}, {"_id": 0}, sort=[("template_version", -1)])
         if not template:
             raise HTTPException(status_code=404, detail="Template não encontrado")
-        confirmations = [{"source_field": item["source_field"], "target_field": item["target_field"], "decision": "CONFIRMED"} for item in template.get("mappings", [])]
+        template_decisions = [{"source_field": item["source_field"], "target_field": item["target_field"], "decision": "CONFIRMED"} for item in template.get("mappings", [])]
+        # Current human decisions are appended last and therefore override the
+        # saved template. In particular, REJECTED must never remain READY.
+        current_decisions = await db.mapping_confirmations.find(
+            {"company_id": company_id, "import_batch_id": batch_id}, {"_id": 0}
+        ).sort("confirmed_at", 1).to_list(10000)
+        confirmations = [*template_decisions, *current_decisions]
     else:
         confirmations = await db.mapping_confirmations.find({"company_id": company_id, "import_batch_id": batch_id}, {"_id": 0}).to_list(10000)
-        template = await db.mapping_templates.find_one({"company_id": company_id, "template_id": {"$exists": True}}, {"_id": 0}, sort=[("updated_at", -1)])
     plan = build_application_plan(profile, confirmations, template)
     plan.update({"import_batch_id": batch_id, "template_id": template.get("template_id") if template else None, "template_version": template.get("template_version") if template else None})
     return plan
@@ -6121,6 +6232,143 @@ async def receive_whatsapp_webhook(request: Request):
 async def get_standard_records(batch_id: str, user=Depends(get_current_user)):
     company_id = _safe_company_id(user)
     return await db.standard_records.find({"company_id": company_id, "import_batch_id": batch_id}, {"_id": 0}).sort("created_at", 1).to_list(100000)
+
+
+@api_router.get("/imports/{batch_id}/proposal-candidates")
+async def get_import_proposal_candidates(batch_id: str, user=Depends(get_current_user)):
+    company_id = _safe_company_id(user)
+    batch = await db.import_batches.find_one({"id": batch_id, "company_id": company_id, "deleted": {"$ne": True}}, {"_id": 0})
+    if not batch:
+        raise HTTPException(status_code=404, detail="Importação não encontrada")
+    records = await db.standard_records.find({"company_id": company_id, "import_batch_id": batch_id}, {"_id": 0}).sort("created_at", 1).to_list(100000)
+    if not records:
+        raise HTTPException(status_code=409, detail="Aplique e confirme o mapeamento antes de revisar as propostas")
+    candidates = build_proposal_candidates(records)
+    existing = await db.import_materializations.find({"company_id": company_id, "import_batch_id": batch_id}, {"_id": 0}).to_list(100000)
+    materialized = {item["group_key"]: item for item in existing}
+    for candidate in candidates:
+        result = materialized.get(candidate["group_key"])
+        candidate["materialization"] = result and {
+            "status": result.get("status"),
+            "proposal_id": result.get("proposal_id"),
+            "opportunity_id": result.get("opportunity_id"),
+        }
+    return {
+        "import_id": batch_id,
+        "summary": {
+            "total": len(candidates),
+            "ready": sum(candidate["ready"] for candidate in candidates),
+            "blocked": sum(not candidate["ready"] for candidate in candidates),
+            "created": sum(bool(candidate.get("materialization") and candidate["materialization"].get("status") == "COMPLETED") for candidate in candidates),
+        },
+        "candidates": candidates,
+    }
+
+
+@api_router.post("/imports/{batch_id}/proposal-candidates/approve")
+async def approve_import_proposal_candidates(batch_id: str, request: Request, user=Depends(get_current_user)):
+    body = await request.json()
+    group_keys = {str(value) for value in body.get("group_keys", []) if str(value).strip()}
+    if not group_keys:
+        raise HTTPException(status_code=422, detail="Selecione ao menos uma proposta para aprovação")
+    company_id = _safe_company_id(user)
+    records = await db.standard_records.find({"company_id": company_id, "import_batch_id": batch_id}, {"_id": 0}).sort("created_at", 1).to_list(100000)
+    candidates = {candidate["group_key"]: candidate for candidate in build_proposal_candidates(records)}
+    unknown = group_keys - set(candidates)
+    if unknown:
+        raise HTTPException(status_code=404, detail="Uma ou mais propostas selecionadas não foram encontradas")
+
+    results = []
+    for group_key in group_keys:
+        candidate = candidates[group_key]
+        if not candidate["ready"]:
+            results.append({"group_key": group_key, "status": "BLOCKED", "errors": candidate["errors"]})
+            continue
+        existing = await db.import_materializations.find_one({"company_id": company_id, "import_batch_id": batch_id, "group_key": group_key}, {"_id": 0})
+        if existing and existing.get("status") == "COMPLETED":
+            results.append(existing)
+            continue
+
+        materialization_id = existing.get("id") if existing else str(uuid.uuid4())
+        now = datetime.now(timezone.utc).isoformat()
+        base = {
+            "id": materialization_id,
+            "company_id": company_id,
+            "import_batch_id": batch_id,
+            "group_key": group_key,
+            "source_record_ids": candidate["source_record_ids"],
+            "approved_by": user["id"],
+            "approved_at": now,
+            "status": "RUNNING",
+            "updated_at": now,
+        }
+        await db.import_materializations.update_one(
+            {"company_id": company_id, "import_batch_id": batch_id, "group_key": group_key},
+            {"$set": base, "$setOnInsert": {"created_at": now}},
+            upsert=True,
+        )
+        try:
+            proposal = None
+            if existing and existing.get("proposal_id"):
+                proposal = await db.proposals.find_one({"id": existing["proposal_id"], "company_id": company_id, "deleted": {"$ne": True}}, {"_id": 0})
+            if not proposal:
+                proposal_input = ProposalIn(
+                    client_name=candidate["client_name"],
+                    client_document=candidate["client_document"],
+                    client_phone=candidate["client_phone"],
+                    client_email=candidate["client_email"],
+                    client_company=candidate["client_company"],
+                    client_city=candidate["client_city"],
+                    client_state=candidate["client_state"],
+                    client_address=candidate["client_address"],
+                    products=[ProposalItemIn(**item) for item in candidate["items"]],
+                    shipping_deadline="A combinar",
+                    notes=candidate["description"],
+                    discount=candidate["discount"],
+                    payment_terms=candidate["payment_terms"],
+                )
+                proposal = await create_proposal(proposal_input, user)
+                await db.import_materializations.update_one({"id": materialization_id, "company_id": company_id}, {"$set": {"proposal_id": proposal["id"], "updated_at": datetime.now(timezone.utc).isoformat()}})
+
+            opportunity = await db.opportunities.find_one({"company_id": company_id, "proposal_id": proposal["id"], "deleted": {"$ne": True}}, {"_id": 0})
+            if not opportunity:
+                opportunity_input = OpportunityIn(
+                    title=f"Proposta importada {candidate['proposal_code']}",
+                    description=candidate["description"],
+                    client_id=proposal.get("client_id", ""),
+                    proposal_id=proposal["id"],
+                    proposal_number=candidate["proposal_code"],
+                    proposal_date=candidate["proposal_date"],
+                    proposal_value=proposal.get("total", candidate["calculated_total"]),
+                    product_summary=", ".join(item["name"] for item in candidate["items"][:5]),
+                    client_name=candidate["client_name"],
+                    client_document=candidate["client_document"],
+                    client_phone=candidate["client_phone"],
+                    client_email=candidate["client_email"],
+                    client_company=candidate["client_company"],
+                    client_city=candidate["client_city"],
+                    client_state=candidate["client_state"],
+                    client_address=candidate["client_address"],
+                    estimated_value=proposal.get("total", candidate["calculated_total"]),
+                    stage="PROPOSTA_ENVIADA",
+                    status="OPEN",
+                )
+                opportunity = await create_opportunity(opportunity_input, user)
+            completed = {**base, "status": "COMPLETED", "proposal_id": proposal["id"], "opportunity_id": opportunity["id"], "completed_at": datetime.now(timezone.utc).isoformat()}
+            await db.import_materializations.update_one({"id": materialization_id, "company_id": company_id}, {"$set": completed})
+            await log_audit(action="IMPORT_PROPOSAL_APPROVED", entity_type="import_materialization", entity_id=materialization_id, old_value=None, new_value=completed, user_id=user["id"], company_id=company_id)
+            results.append(completed)
+        except HTTPException as exc:
+            await db.import_materializations.update_one({"id": materialization_id, "company_id": company_id}, {"$set": {"status": "FAILED", "error": str(exc.detail), "updated_at": datetime.now(timezone.utc).isoformat()}})
+            results.append({"id": materialization_id, "group_key": group_key, "status": "FAILED", "errors": [str(exc.detail)]})
+        except Exception as exc:
+            logging.exception("Import proposal materialization failed")
+            await db.import_materializations.update_one({"id": materialization_id, "company_id": company_id}, {"$set": {"status": "FAILED", "error": str(exc), "updated_at": datetime.now(timezone.utc).isoformat()}})
+            results.append({"id": materialization_id, "group_key": group_key, "status": "FAILED", "errors": ["Falha inesperada ao criar proposta"]})
+
+    completed_count = sum(result.get("status") == "COMPLETED" for result in results)
+    await db.import_batches.update_one({"id": batch_id, "company_id": company_id}, {"$set": {"status": "MATERIALIZED" if completed_count == len(group_keys) else "PARTIAL", "updated_at": datetime.now(timezone.utc).isoformat()}})
+    return {"approved": completed_count, "requested": len(group_keys), "results": results}
 
 
 @api_router.delete("/imports/{batch_id}")

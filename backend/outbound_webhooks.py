@@ -96,7 +96,7 @@ def proposal_payload(event: str, proposal: dict, company: dict) -> dict:
             "number": code,
             "status": proposal.get("acceptance_status") if event == "proposal.accepted" else proposal.get("status"),
             "proposal_url": f"https://app.propostaapp.com.br/p/{code}",
-            "pdf_url": None,
+            "pdf_url": f"{os.getenv('PUBLIC_API_URL', 'https://projeto-app-proposta-ja.onrender.com').rstrip('/')}/api/public/proposals/code/{code}/pdf",
         },
         "client": {
             "name": proposal.get("client_name") or "",
